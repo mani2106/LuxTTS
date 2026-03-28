@@ -5,7 +5,7 @@ from pathlib import Path
 # Server defaults
 DEFAULT_HOST = "0.0.0.0"
 DEFAULT_PORT = 7860
-DEFAULT_DEVICE = "cuda:0"
+DEFAULT_DEVICE = "cuda"
 DEFAULT_MODEL_PATH = "YatharthS/LuxTTS"
 
 # Generation defaults

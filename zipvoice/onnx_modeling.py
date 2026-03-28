@@ -197,6 +197,14 @@ def generate_cpu(prompt_tokens, prompt_features_lens, prompt_features, prompt_rm
 
     # Convert to waveform
     pred_features = pred_features.permute(0, 2, 1) / 0.1
+
+    # FIX: Padding for the Vocoder
+    # We take the last frame and repeat it 15 times (approx 150ms buffer)
+    # This gives Vocos enough data to finish the previous sound without cutting it.
+    last_frame = pred_features[:, :, -1:]
+    padding_frames = last_frame.repeat(1, 1, 15)
+    pred_features = torch.cat([pred_features, padding_frames], dim=2)
+
     wav = vocoder.decode(pred_features).squeeze(1).clamp(-1, 1)
 
     # Volume matching

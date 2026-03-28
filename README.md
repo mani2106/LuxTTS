@@ -135,9 +135,17 @@ uv pip install -r requirements-server.txt
 
 ### Running the Server
 
+**Option 1: Gradio server (with Web UI)**
 ```bash
 python SkyrimNet-LuxTTS.py --server 0.0.0.0 --port 7860
 ```
+
+**Option 2: Standalone FastAPI server (recommended for SkyrimNet)**
+```bash
+python skyrimnet_api.py --server 0.0.0.0 --port 7860
+```
+
+The standalone server has lower overhead, supports voice file uploads from SkyrimNet, and implements the full Gradio API protocol without the Gradio dependency.
 
 ### SkyrimNet Configuration
 

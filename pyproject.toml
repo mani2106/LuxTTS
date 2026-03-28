@@ -13,15 +13,15 @@ dependencies = [
   "librosa",
   "linacodec",
   "numpy",
-  "onnxruntime",
+  "onnxruntime==1.20.1",
   "piper-phonemize",
   "pydub",
   "pypinyin",
   "safetensors",
   "setuptools<81",
   "tensorboard",
-  "torch",
-  "torchaudio",
+  "torch>=2.4.0",          # Move to modern Torch for CUDA 12.x support
+  "torchaudio>=2.4.0",
   "transformers<=4.57.6",
   "vocos",
 ]
@@ -39,13 +39,18 @@ build-backend = "uv_build"
 line-length = 120
 
 [tool.uv]
-find-links = ["https://k2-fsa.github.io/icefall/piper_phonemize.html"]
-
+find-links = [
+  "https://k2-fsa.github.io/icefall/piper_phonemize.html",
+  "https://k2-fsa.github.io/k2/cuda.html" # Add this for k2 CUDA wheels
+]
 [tool.uv.sources]
 linacodec = { git = "https://github.com/ysharma3501/LinaCodec.git" }
 
 [tool.uv.build-backend]
 module-root = "" # The root module of the project
+
+[tool.uv.extra-build-dependencies]
+git = ["torch"]
 
 [dependency-groups]
 dev = [

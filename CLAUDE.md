@@ -32,7 +32,8 @@ For training: `uv pip install -e ".[train]"` (adds `einops`).
 ## Architecture
 
 ### SkyrimNet-LuxTTS Server (NEW)
-- **`SkyrimNet-LuxTTS.py`** — Gradio HTTP server that wraps LuxTTS as a SkyrimNet GamePlugin backend
+- **`SkyrimNet-LuxTTS.py`** — Gradio HTTP server with Web UI for interactive use
+- **`skyrimnet_api.py`** — Standalone FastAPI server for SkyrimNet GamePlugin. Implements Gradio-compatible endpoints (`/gradio_api/upload`, `/gradio_api/call/generate_audio`, `/gradio_api/file=`, `/gradio_api/config`) without Gradio dependency. Includes voice file indexing, non-blocking generation via `asyncio.to_thread()`, generation timeout, and cached file eviction.
 - **`utilities/`** — Server support modules:
   - `app_config.py` — Configuration with CLI argument parsing
   - `app_constants.py` — Server defaults and constants

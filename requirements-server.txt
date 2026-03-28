@@ -2,3 +2,7 @@
 
 gradio>=4.0.0
 huggingface-hub>=0.20.0
+
+# Dependencies for the standalone SkyrimNet FastAPI server
+fastapi>=0.100.0
+uvicorn>=0.20.0

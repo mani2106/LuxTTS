@@ -16,3 +16,10 @@ Audio files should be:
 - 3-10 seconds recommended for voice cloning
 
 Place your own voice samples here for use as preset voices.
+
+## Voice Lookup
+
+The standalone server (`skyrimnet_api.py`) indexes all WAV files recursively on startup
+for O(1) name-based lookups. Voice files uploaded at runtime via the API are also
+indexed immediately. Lookup matches by stem (e.g. `malecommoner`) and full filename
+(e.g. `malecommoner.wav`), case-insensitive.
