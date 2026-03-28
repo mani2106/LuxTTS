@@ -37,3 +37,5 @@ MODELS_DIR = Path("models")
 # Create directories on import
 EMBEDS_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+MODELS_DIR.mkdir(parents=True, exist_ok=True)
+SPEAKERS_DIR.mkdir(parents=True, exist_ok=True)
