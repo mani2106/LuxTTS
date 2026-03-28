@@ -119,6 +119,48 @@ if display is not None:
 
 Thanks to all community contributions!
 
+## SkyrimNet GamePlugin Integration
+
+To use LuxTTS as a backend for SkyrimNet GamePlugin:
+
+### Installation
+
+```bash
+# Install LuxTTS
+uv pip install -r requirements.txt
+
+# Install server dependencies
+uv pip install -r requirements-server.txt
+```
+
+### Running the Server
+
+```bash
+python SkyrimNet-LuxTTS.py --server 0.0.0.0 --port 7860
+```
+
+### SkyrimNet Configuration
+
+In the SkyrimNet Web UI:
+1. Go to "Test & Easy Setup"
+2. Select TTS Backend: Custom/LuxTTS
+3. Enter TTS Server URL: `http://localhost:7860`
+4. Click "Test Connection" — should return silence (ping response)
+
+### Preset Voices
+
+Place voice sample WAV files in `speakers/en/` directory. The server will
+pre-encode these on startup for fast access.
+
+### Building Windows Executable
+
+```bash
+python build_exe.py
+```
+
+The executable will be in `dist/SkyrimNet-LuxTTS.exe`. Include the `speakers/`
+directory when distributing.
+
 ## Info
 
 Q: How is this different from ZipVoice?
