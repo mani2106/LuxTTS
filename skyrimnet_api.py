@@ -318,7 +318,7 @@ async def poll_generation(event_id: str):
 # GET /gradio_api/file={filename}
 # ---------------------------------------------------------------------------
 
-@app.get("/gradio_api/file={file_path:path}")
+@app.api_route("/gradio_api/file={file_path:path}", methods=["GET", "HEAD"])
 async def fetch_file(file_path: str):
     """Serve a generated audio file."""
     filename = Path(file_path).name
