@@ -199,3 +199,4 @@ models/
 # SkyrimNet-LuxTTS server
 cache/
 output_tmp/
+speakers/

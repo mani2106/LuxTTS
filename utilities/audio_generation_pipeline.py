@@ -7,11 +7,15 @@ from pathlib import Path
 from typing import Optional, Tuple
 
 import torch
-import numpy as np
 
 from utilities.app_constants import (
-    EMBEDS_CACHE_DIR, SPEAKERS_DIR, DEFAULT_SPEAKER,
-    OUTPUT_DIR, PING_TEXT, PING_DURATION_SEC, SAMPLE_RATE,
+    EMBEDS_CACHE_DIR,
+    SPEAKERS_DIR,
+    DEFAULT_SPEAKER,
+    OUTPUT_DIR,
+    PING_TEXT,
+    PING_DURATION_SEC,
+    SAMPLE_RATE,
 )
 from utilities.model_utils import load_model_if_needed
 from utilities.cache_utils import get_audio_file_hash, get_cached_embedding, cache_embedding
@@ -63,9 +67,7 @@ async def generate_audio(
     torch.manual_seed(seed)
 
     # Get speaker encoding
-    encode_dict = await _get_speaker_encoding(
-        speaker_audio, model, config
-    )
+    encode_dict = await _get_speaker_encoding(speaker_audio, model, config)
 
     # Generate speech
     logger.info(f"Generating speech for text: {text[:50]}...")

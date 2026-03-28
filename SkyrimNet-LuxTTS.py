@@ -8,19 +8,15 @@ Drop-in replacement for Chatterbox/Zonos backends in SkyrimNet GamePlugin.
 import asyncio
 import logging
 import sys
-from pathlib import Path
 
 import gradio as gr
 
 from utilities.app_config import AppConfig
-from utilities.app_constants import (
-    DEFAULT_PORT, GENERATION_CONCURRENCY_LIMIT,
-    DEFAULT_NUM_STEPS, DEFAULT_GUIDANCE_SCALE,
-    DEFAULT_SPEED, DEFAULT_SEED,
-)
+from utilities.app_constants import GENERATION_CONCURRENCY_LIMIT
 from utilities.model_utils import load_model_if_needed
 from utilities.audio_generation_pipeline import (
-    generate_audio, init_speaker_cache,
+    generate_audio,
+    init_speaker_cache,
 )
 
 
@@ -122,8 +118,14 @@ def build_interface(config: AppConfig) -> gr.Blocks:
 
         # Wire up generation
         async def do_generate(
-            text, speaker_audio_file, language,
-            cfg_scale, speed, num_steps, seed, randomize_seed,
+            text,
+            speaker_audio_file,
+            language,
+            cfg_scale,
+            speed,
+            num_steps,
+            seed,
+            randomize_seed,
         ):
             return await generate_audio(
                 text=text or "",
@@ -140,8 +142,14 @@ def build_interface(config: AppConfig) -> gr.Blocks:
         generate_btn.click(
             fn=do_generate,
             inputs=[
-                text_input, speaker_audio, language,
-                cfg_scale, speed, num_steps, seed, randomize_seed,
+                text_input,
+                speaker_audio,
+                language,
+                cfg_scale,
+                speed,
+                num_steps,
+                seed,
+                randomize_seed,
             ],
             outputs=[output_audio, output_seed],
             api_name="generate_audio",  # This is the endpoint SkyrimNet calls
@@ -159,7 +167,7 @@ async def main():
     logger.info(f"Model: {config.model_path}")
 
     # Load model
-    model = load_model_if_needed(config)
+    load_model_if_needed(config)
 
     # Initialize speaker cache
     await init_speaker_cache(config)

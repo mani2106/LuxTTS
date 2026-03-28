@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__MCP_DOCKER__git-repo-to-markdown",
+      "mcp__MCP_DOCKER__fetch"
+    ]
+  }
+}

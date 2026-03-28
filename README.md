@@ -13,7 +13,7 @@
   </a>
 </p>
 
-LuxTTS is an lightweight zipvoice based text-to-speech model designed for high quality voice cloning and realistic generation at speeds exceeding 150x realtime.
+LuxTTS is a lightweight zipvoice-based text-to-speech model designed for high quality voice cloning and realistic generation at speeds exceeding 150x realtime.
 
 https://github.com/user-attachments/assets/a3b57152-8d97-43ce-bd99-26dc9a145c29
 

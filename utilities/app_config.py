@@ -3,9 +3,15 @@
 import argparse
 from dataclasses import dataclass
 from utilities.app_constants import (
-    DEFAULT_HOST, DEFAULT_PORT, DEFAULT_DEVICE, DEFAULT_MODEL_PATH,
-    GENERATION_CONCURRENCY_LIMIT, DEFAULT_NUM_STEPS,
-    DEFAULT_GUIDANCE_SCALE, DEFAULT_SPEED, DEFAULT_SEED,
+    DEFAULT_HOST,
+    DEFAULT_PORT,
+    DEFAULT_DEVICE,
+    DEFAULT_MODEL_PATH,
+    GENERATION_CONCURRENCY_LIMIT,
+    DEFAULT_NUM_STEPS,
+    DEFAULT_GUIDANCE_SCALE,
+    DEFAULT_SPEED,
+    DEFAULT_SEED,
 )
 
 
@@ -28,33 +34,13 @@ class AppConfig:
     @classmethod
     def from_cli(cls) -> "AppConfig":
         """Parse CLI arguments and create config."""
-        parser = argparse.ArgumentParser(
-            description="SkyrimNet-LuxTTS: Gradio server for LuxTTS TTS backend"
-        )
-        parser.add_argument(
-            "--server", default=DEFAULT_HOST,
-            help="Server host to bind to"
-        )
-        parser.add_argument(
-            "--port", type=int, default=DEFAULT_PORT,
-            help="Server port"
-        )
-        parser.add_argument(
-            "--device", default=DEFAULT_DEVICE,
-            help="Torch device (cuda:0, cpu, mps)"
-        )
-        parser.add_argument(
-            "--model-path", default=DEFAULT_MODEL_PATH,
-            help="HuggingFace model ID or local path"
-        )
-        parser.add_argument(
-            "--share", action="store_true",
-            help="Create public Gradio link"
-        )
-        parser.add_argument(
-            "--inbrowser", action="store_true",
-            help="Open browser automatically on launch"
-        )
+        parser = argparse.ArgumentParser(description="SkyrimNet-LuxTTS: Gradio server for LuxTTS TTS backend")
+        parser.add_argument("--server", default=DEFAULT_HOST, help="Server host to bind to")
+        parser.add_argument("--port", type=int, default=DEFAULT_PORT, help="Server port")
+        parser.add_argument("--device", default=DEFAULT_DEVICE, help="Torch device (cuda:0, cpu, mps)")
+        parser.add_argument("--model-path", default=DEFAULT_MODEL_PATH, help="HuggingFace model ID or local path")
+        parser.add_argument("--share", action="store_true", help="Create public Gradio link")
+        parser.add_argument("--inbrowser", action="store_true", help="Open browser automatically on launch")
 
         args = parser.parse_args()
 

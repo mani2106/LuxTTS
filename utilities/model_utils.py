@@ -52,6 +52,7 @@ def load_model_if_needed(config: AppConfig) -> "LuxTTS":
 
     # Set to inference mode
     import torch
+
     _CURRENT_MODEL.model.eval()
     torch.inference_mode()
 
