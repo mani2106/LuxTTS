@@ -1,0 +1,4 @@
+# Additional dependencies for the Gradio server
+
+gradio>=4.0.0
+huggingface-hub>=0.20.0
