@@ -18,9 +18,9 @@ except ImportError:
 
 try:
     import pyloudnorm as pyln
-    HAS_PYLUDNORM = True
+    HAS_PLOUDNORM = True
 except ImportError:
-    HAS_PYLUDNORM = False
+    HAS_PLOUDNORM = False
 
 
 class PitchDetector:
