@@ -6,6 +6,7 @@ import time
 from pathlib import Path
 from typing import Optional, Tuple
 
+import numpy as np
 import torch
 
 from utilities.app_constants import (
@@ -22,11 +23,23 @@ from utilities.app_constants import (
     DEFAULT_REF_DURATION,
     DEFAULT_SPEED,
     DEFAULT_NUM_STEPS,
+    DEFAULT_POST_PROCESSING_ENABLED,
+    DEFAULT_PITCH_SHIFT,
+    DEFAULT_EQ_INTENSITY,
+    DEFAULT_COMPRESSOR_THRESHOLD_OFFSET,
+    DEFAULT_COMPRESSOR_RATIO,
+    DEFAULT_COMPRESSOR_KNEE_DB,
+    DEFAULT_COMPRESSOR_ATTACK_MS,
+    DEFAULT_COMPRESSOR_RELEASE_MS,
+    DEFAULT_MAX_GAIN_REDUCTION_DB,
+    DEFAULT_DE_ESS_INTENSITY,
+    DEFAULT_TARGET_LOUDNESS_LUFS,
 )
 from utilities.model_utils import load_model_if_needed
 from utilities.cache_utils import get_audio_file_hash, get_cached_embedding, cache_embedding
 from utilities.audio_utils import save_wav_file, create_silence
 from utilities.app_config import AppConfig
+from utilities.post_processor import AudioPostProcessor
 
 
 logger = logging.getLogger(__name__)
@@ -44,7 +57,21 @@ async def generate_audio(
     t_shift: float = DEFAULT_T_SHIFT,
     return_smooth: bool = DEFAULT_RETURN_SMOOTH,
     config: AppConfig = None,
-) -> Tuple[str, int]:
+    # Post-processing parameters
+    enable_post_processing: bool = DEFAULT_POST_PROCESSING_ENABLED,
+    pitch_shift: Optional[float] = DEFAULT_PITCH_SHIFT,
+    eq_intensity: float = DEFAULT_EQ_INTENSITY,
+    compressor_threshold_offset: float = DEFAULT_COMPRESSOR_THRESHOLD_OFFSET,
+    compressor_ratio: float = DEFAULT_COMPRESSOR_RATIO,
+    compressor_knee_db: float = DEFAULT_COMPRESSOR_KNEE_DB,
+    compressor_attack_ms: float = DEFAULT_COMPRESSOR_ATTACK_MS,
+    compressor_release_ms: float = DEFAULT_COMPRESSOR_RELEASE_MS,
+    max_gain_reduction_db: float = DEFAULT_MAX_GAIN_REDUCTION_DB,
+    de_ess_intensity: float = DEFAULT_DE_ESS_INTENSITY,
+    target_loudness: float = DEFAULT_TARGET_LOUDNESS_LUFS,
+    return_diagnostics: bool = False,
+    save_raw: bool = False,
+) -> Tuple[str, int] | Tuple[str, int, str, dict]:
     """
     Generate audio from text using LuxTTS.
 
@@ -60,9 +87,22 @@ async def generate_audio(
         t_shift: Sampling shift, higher can sound better but worse WER
         return_smooth: If True, disables 48k upsampling for smoother output
         config: App configuration
+        enable_post_processing: If True, apply DSP post-processing chain
+        pitch_shift: Manual pitch shift in semitones, or None for auto-detection
+        eq_intensity: EQ aggressiveness (0.0-1.0)
+        compressor_threshold_offset: Compressor threshold offset from signal RMS (dB)
+        compressor_ratio: Compression ratio
+        compressor_knee_db: Soft-knee width (dB)
+        compressor_attack_ms: Attack time (ms)
+        compressor_release_ms: Release time (ms)
+        max_gain_reduction_db: Maximum gain reduction per frame (dB)
+        de_ess_intensity: De-essing strength (0.0-1.0)
+        target_loudness: Target LUFS for final normalization
+        return_diagnostics: If True, return diagnostic metrics
+        save_raw: If True, also save unprocessed audio (returns tuple of 4)
 
     Returns:
-        Tuple of (output_wav_path, seed_used)
+        Tuple of (output_wav_path, seed) or (output_wav_path, seed, raw_path, diagnostics)
     """
     # Health check
     if text == PING_TEXT:
@@ -91,12 +131,51 @@ async def generate_audio(
         return_smooth=return_smooth,
     )
 
-    # Save output
+    # Convert to numpy for post-processing
+    if hasattr(audio, 'numpy'):
+        audio = audio.numpy()
+    elif isinstance(audio, torch.Tensor):
+        audio = audio.cpu().numpy()
+    audio_array = audio.astype(np.float32).squeeze()
+
+    # Save raw output if requested (for A/B preview)
+    raw_path = None
+    raw_diagnostics = {}
+    if save_raw:
+        raw_timestamp = int(time.time() * 1000)
+        raw_path = OUTPUT_DIR / f"output_{raw_timestamp}_raw.wav"
+        save_wav_file(audio_array, raw_path, sample_rate=SAMPLE_RATE)
+        logger.debug(f"Saved raw audio to {raw_path}")
+
+    # Apply post-processing
+    if enable_post_processing:
+        processor = AudioPostProcessor(return_diagnostics=return_diagnostics)
+        audio_array, raw_diagnostics = processor.process(
+            audio_array,
+            sr=SAMPLE_RATE,
+            text=text,
+            pitch_shift=pitch_shift,
+            eq_intensity=eq_intensity,
+            de_ess_intensity=de_ess_intensity,
+            compressor_threshold_offset_db=compressor_threshold_offset,
+            compressor_ratio=compressor_ratio,
+            compressor_knee_db=compressor_knee_db,
+            compressor_attack_ms=compressor_attack_ms,
+            compressor_release_ms=compressor_release_ms,
+            max_gain_reduction_db=max_gain_reduction_db,
+            target_loudness=target_loudness,
+        )
+
+    # Save processed output
     timestamp = int(time.time() * 1000)
     output_path = OUTPUT_DIR / f"output_{timestamp}.wav"
-    save_wav_file(audio, output_path, sample_rate=SAMPLE_RATE)
+    save_wav_file(audio_array, output_path, sample_rate=SAMPLE_RATE)
 
     logger.info(f"Saved audio to {output_path}")
+
+    # Return based on what was requested
+    if save_raw or return_diagnostics:
+        return str(output_path), seed, str(raw_path) if raw_path else None, raw_diagnostics
     return str(output_path), seed
 
 
