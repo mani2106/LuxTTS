@@ -548,10 +548,10 @@ class AudioPostProcessor:
 
         diagnostics = {}
         if self.return_diagnostics:
-            diagnostics['input_lufs'] = input_lufs
-            diagnostics['output_lufs'] = output_lufs
+            diagnostics['input_lufs'] = float(input_lufs)
+            diagnostics['output_lufs'] = float(output_lufs)
             diagnostics['max_reduction_db'] = float(np.max(gain_reduction_db))
-            diagnostics['makeup_gain_db'] = makeup_gain_db
+            diagnostics['makeup_gain_db'] = float(makeup_gain_db)
             # Downsample gain curve for storage
             downsample_factor = max(1, len(smoothed_gain) // 1000)
             diagnostics['gain_curve'] = 20 * np.log10(smoothed_gain[::downsample_factor] + 1e-10)
@@ -594,8 +594,8 @@ class AudioPostProcessor:
         if self.return_diagnostics:
             input_lufs = self._compute_lufs(audio, sr)
             output_lufs = self._compute_lufs(processed, sr)
-            diagnostics['input_lufs'] = input_lufs
-            diagnostics['output_lufs'] = output_lufs
+            diagnostics['input_lufs'] = float(input_lufs)
+            diagnostics['output_lufs'] = float(output_lufs)
             diagnostics['max_reduction_db'] = 0.0  # Pedalboard doesn't expose this
             diagnostics['makeup_gain_db'] = 0.0
             diagnostics['gain_curve'] = np.zeros(1000)  # Placeholder
@@ -748,130 +748,6 @@ class AudioPostProcessor:
 
         return float(estimated_lufs)
 
-    def compressor(
-        self,
-        audio: np.ndarray,
-        sr: int,
-        threshold_db: float = -20.0,
-        ratio: float = 4.0,
-        attack_ms: float = 5.0,
-        release_ms: float = 50.0,
-    ) -> tuple[np.ndarray, dict]:
-        """
-        Apply dynamic range compression to reduce volume peaks.
-
-        Uses smooth gain following with configurable attack/release times.
-
-        Args:
-            audio: Input audio (float32, 48kHz)
-            sr: Sample rate (should be 48000)
-            threshold_db: Level above which compression activates (dBFS)
-            ratio: Compression ratio (e.g., 4.0 = 4:1, input needs 4dB for 1dB output)
-            attack_ms: Attack time in milliseconds
-            release_ms: Release time in milliseconds
-
-        Returns:
-            (processed_audio, diagnostics_dict)
-        """
-        # If threshold is very high (e.g., 0 dB or above), bypass compression
-        if threshold_db >= 0.0:
-            return audio.copy(), {}
-
-        if HAS_PEDALBOARD:
-            return self._compressor_pedalboard(audio, sr, threshold_db, ratio, attack_ms, release_ms)
-
-        return self._compressor_native(audio, sr, threshold_db, ratio, attack_ms, release_ms)
-
-    def _compressor_native(
-        self,
-        audio: np.ndarray,
-        sr: int,
-        threshold_db: float,
-        ratio: float,
-        attack_ms: float,
-        release_ms: float,
-    ) -> tuple[np.ndarray, dict]:
-        """Native scipy implementation of compression."""
-        # Convert attack/release from ms to samples
-        attack_samples = int(attack_ms * sr / 1000)
-        release_samples = int(release_ms * sr / 1000)
-
-        # Compute input signal level (RMS with smoothing)
-        window_size = max(1, int(0.01 * sr))  # 10ms window
-        kernel = np.ones(window_size) / window_size
-
-        # Compute squared signal for RMS
-        squared = audio ** 2
-        squared_padded = np.pad(squared, (window_size // 2, window_size // 2), mode='edge')
-        rms_squared = np.convolve(squared_padded, kernel, mode='same')[:len(squared)]
-        rms = np.sqrt(np.maximum(rms_squared, 1e-10))
-
-        # Convert to dB
-        signal_db = 20 * np.log10(rms + 1e-10)
-
-        # Compute gain reduction
-        # Above threshold: gain = threshold + (signal - threshold) / ratio
-        # Below threshold: gain = signal (no reduction)
-        gain_db = np.copy(signal_db)
-        above_threshold = signal_db > threshold_db
-        gain_db[above_threshold] = threshold_db + (signal_db[above_threshold] - threshold_db) / ratio
-
-        # Compute required gain reduction in dB
-        gain_reduction_db = signal_db - gain_db
-
-        # Smooth gain reduction with attack/release
-        smoothed_gain_reduction = np.zeros_like(gain_reduction_db)
-        current_gain = 0.0
-
-        for i in range(len(gain_reduction_db)):
-            target_gain = gain_reduction_db[i]
-
-            if target_gain > current_gain:
-                # Attack: gain increasing (more compression)
-                coef = np.exp(-1.0 / attack_samples)
-            else:
-                # Release: gain decreasing (less compression)
-                coef = np.exp(-1.0 / release_samples)
-
-            current_gain = coef * current_gain + (1 - coef) * target_gain
-            smoothed_gain_reduction[i] = current_gain
-
-        # Apply gain reduction
-        gain_linear = 10 ** (-smoothed_gain_reduction / 20)
-        processed = audio * gain_linear
-
-        diagnostics = {}
-        if self.return_diagnostics:
-            diagnostics['gain_reduction_db_curve'] = smoothed_gain_reduction
-
-        return processed.astype(np.float32), diagnostics
-
-    def _compressor_pedalboard(
-        self,
-        audio: np.ndarray,
-        sr: int,
-        threshold_db: float,
-        ratio: float,
-        attack_ms: float,
-        release_ms: float,
-    ) -> tuple[np.ndarray, dict]:
-        """Pedalboard implementation of compression."""
-        compressor = pedalboard.Compressor(
-            threshold_db=threshold_db,
-            ratio=ratio,
-            attack_ms=attack_ms,
-            release_ms=release_ms,
-        )
-
-        processed = compressor(audio, sr)
-
-        diagnostics = {}
-        if self.return_diagnostics:
-            # Pedalboard doesn't expose gain curve, use placeholder
-            diagnostics['gain_reduction_db_curve'] = np.zeros(len(audio) // 100)
-
-        return processed.astype(np.float32), diagnostics
-
     def process(
         self,
         audio: np.ndarray,
@@ -880,10 +756,12 @@ class AudioPostProcessor:
         pitch_shift: Optional[float] = None,
         eq_intensity: float = 1.0,
         de_ess_intensity: float = 0.5,
-        compressor_threshold_db: float = -20.0,
+        compressor_threshold_offset_db: float = -6.0,
         compressor_ratio: float = 4.0,
-        compressor_attack_ms: float = 5.0,
-        compressor_release_ms: float = 50.0,
+        compressor_knee_db: float = 4.0,
+        compressor_attack_ms: float = 10.0,
+        compressor_release_ms: float = 100.0,
+        max_gain_reduction_db: float = 12.0,
         target_loudness: float = -16.0,
         enable_post_processing: bool = True,
     ) -> tuple[np.ndarray, dict]:
@@ -893,7 +771,7 @@ class AudioPostProcessor:
         Processing order:
         1. De-esser (reduce sibilance)
         2. EQ (tame harshness, add warmth)
-        3. Compressor (reduce dynamic range)
+        3. Compressor (soft-knee, adaptive threshold, look-ahead, makeup gain)
         4. Pitch shift (adjust pitch)
         5. Normalize loudness (EBU R128)
 
@@ -904,10 +782,12 @@ class AudioPostProcessor:
             pitch_shift: Manual pitch override in semitones. If None, auto-detected from text.
             eq_intensity: EQ processing intensity (0.0 = bypass, 1.0 = full)
             de_ess_intensity: De-essing intensity (0.0 = bypass, 1.0 = full)
-            compressor_threshold_db: Compression threshold (dBFS, negative values)
+            compressor_threshold_offset_db: Compressor threshold offset from signal RMS (dB)
             compressor_ratio: Compression ratio (e.g., 4.0 = 4:1)
+            compressor_knee_db: Soft-knee width in dB
             compressor_attack_ms: Attack time in milliseconds
             compressor_release_ms: Release time in milliseconds
+            max_gain_reduction_db: Maximum gain reduction per frame (dB)
             target_loudness: Target loudness in LUFS
             enable_post_processing: If False, bypass all processing and return original audio
 
@@ -940,13 +820,15 @@ class AudioPostProcessor:
         if eq_diagnostics:
             all_diagnostics['equalize'] = eq_diagnostics
 
-        # Stage 3: Compressor
-        audio, compressor_diagnostics = self.compressor(
+        # Stage 3: Compressor (advanced with soft-knee, adaptive threshold, look-ahead, makeup gain)
+        audio, compressor_diagnostics = self.compress(
             audio, sr,
-            threshold_db=compressor_threshold_db,
+            threshold_offset_db=compressor_threshold_offset_db,
             ratio=compressor_ratio,
+            knee_db=compressor_knee_db,
             attack_ms=compressor_attack_ms,
             release_ms=compressor_release_ms,
+            max_reduction_db=max_gain_reduction_db,
         )
         if compressor_diagnostics:
             all_diagnostics['compressor'] = compressor_diagnostics
