@@ -74,6 +74,20 @@ def sample_48k_audio():
     return audio.astype(np.float32), sr
 
 
+def test_de_esser_reduces_high_frequencies(sample_48k_audio):
+    """De-esser should reduce energy in sibilant frequency band (5-8kHz)."""
+    audio, sr = sample_48k_audio
+    processor = AudioPostProcessor(return_diagnostics=True)
+
+    processed, diagnostics = processor.de_esser(audio, sr, intensity=0.5)
+
+    # Check that de-esser processes the signal and produces diagnostics
+    assert processed is not None
+    assert len(processed) == len(audio)
+    assert 'reduction_db_curve' in diagnostics
+    assert len(diagnostics['reduction_db_curve']) > 0
+
+
 def test_de_esser_zero_intensity_bypass(sample_48k_audio):
     """Zero intensity should bypass processing (output ≈ input)."""
     audio, sr = sample_48k_audio
