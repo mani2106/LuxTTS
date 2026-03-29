@@ -18,6 +18,19 @@ DEFAULT_T_SHIFT = 0.9  # Sampling param, higher can sound better but worse WER
 DEFAULT_RETURN_SMOOTH = True  # Makes it sound smoother possibly but less cleaner
 DEFAULT_REF_DURATION = 10  # Lower speeds up inference; set to 1000 if artifacts in beginning
 
+# Post-processing defaults
+DEFAULT_POST_PROCESSING_ENABLED = True
+DEFAULT_PITCH_SHIFT = None  # None = auto from text
+DEFAULT_EQ_INTENSITY = 1.0
+DEFAULT_COMPRESSOR_THRESHOLD_OFFSET = -6.0  # dB offset from signal RMS
+DEFAULT_COMPRESSOR_RATIO = 4.0
+DEFAULT_COMPRESSOR_KNEE_DB = 4.0
+DEFAULT_COMPRESSOR_ATTACK_MS = 10.0
+DEFAULT_COMPRESSOR_RELEASE_MS = 100.0
+DEFAULT_MAX_GAIN_REDUCTION_DB = 12.0
+DEFAULT_DE_ESS_INTENSITY = 0.5
+DEFAULT_TARGET_LOUDNESS_LUFS = -16.0
+
 # Cache configuration
 CACHE_DIR = Path("cache")
 EMBEDS_CACHE_DIR = CACHE_DIR / "embeds"
