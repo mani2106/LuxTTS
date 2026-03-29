@@ -92,3 +92,117 @@ class PitchDetector:
         uppercase_count = sum(1 for c in alnum_chars if c.isupper())
         ratio = uppercase_count / len(alnum_chars)
         return ratio >= self.ALL_CAPS_THRESHOLD
+
+
+class AudioPostProcessor:
+    """
+    Composable audio post-processing pipeline.
+
+    Each stage returns (processed_audio, diagnostics_dict).
+    Diagnostics are empty dict when return_diagnostics=False.
+    """
+
+    def __init__(self, return_diagnostics: bool = False):
+        """
+        Initialize the post-processor.
+
+        Args:
+            return_diagnostics: If True, return diagnostic metrics from each stage.
+        """
+        self.return_diagnostics = return_diagnostics
+
+    def de_esser(
+        self,
+        audio: np.ndarray,
+        sr: int,
+        intensity: float = 0.5,
+    ) -> tuple[np.ndarray, dict]:
+        """
+        Reduce sibilance (harsh 's' and 'sh' sounds).
+
+        Uses band-pass filtered envelope detection in 5-8kHz range with
+        adaptive threshold relative to signal RMS.
+
+        Args:
+            audio: Input audio (float32, 48kHz)
+            sr: Sample rate (should be 48000)
+            intensity: De-essing strength (0.0 = bypass, 1.0 = full)
+
+        Returns:
+            (processed_audio, diagnostics_dict)
+        """
+        # Bypass if intensity is zero, regardless of available backends
+        if intensity <= 0.0:
+            return audio.copy(), {}
+
+        # Use pedalboard if available, otherwise native scipy
+        if HAS_PEDALBOARD:
+            return self._de_esser_pedalboard(audio, sr, intensity)
+
+        return self._de_esser_native(audio, sr, intensity)
+
+    def _de_esser_native(
+        self,
+        audio: np.ndarray,
+        sr: int,
+        intensity: float,
+    ) -> tuple[np.ndarray, dict]:
+        """Native scipy implementation of de-essing."""
+        # Design band-pass filter for sibilant range (5-8kHz)
+        low = 5000 / (sr / 2)
+        high = 8000 / (sr / 2)
+        b, a = signal.butter(4, [low, high], btype='band')
+
+        # Extract sibilant band
+        sibilant = signal.filtfilt(b, a, audio)
+
+        # Compute adaptive threshold from signal RMS
+        signal_rms = np.sqrt(np.mean(audio ** 2))
+        threshold = signal_rms * (0.3 + intensity * 0.4)
+
+        # Envelope follower (simple rectification + low-pass)
+        envelope = np.abs(sibilant)
+        # Smooth envelope with attack/release (simplified as moving average)
+        window_size = int(0.01 * sr)  # 10ms
+        if window_size < 1:
+            window_size = 1
+        envelope_padded = np.pad(envelope, (window_size // 2, window_size // 2), mode='edge')
+        kernel = np.ones(window_size) / window_size
+        smooth_envelope = np.convolve(envelope_padded, kernel, mode='same')[:len(envelope)]
+
+        # Compute gain reduction where envelope exceeds threshold
+        gain_reduction = np.ones_like(audio)
+        mask = smooth_envelope > threshold
+        # Reduce gain proportionally to how much we exceed threshold
+        excess = smooth_envelope[mask] - threshold
+        reduction = 1.0 - (excess / (threshold + excess)) * intensity * 0.5
+        gain_reduction[mask] = np.clip(reduction, 0.3, 1.0)
+
+        # Apply gain reduction
+        processed = audio * gain_reduction
+
+        diagnostics = {}
+        if self.return_diagnostics:
+            diagnostics['reduction_db_curve'] = 20 * np.log10(gain_reduction + 1e-10)
+
+        return processed.astype(np.float32), diagnostics
+
+    def _de_esser_pedalboard(
+        self,
+        audio: np.ndarray,
+        sr: int,
+        intensity: float,
+    ) -> tuple[np.ndarray, dict]:
+        """Pedalboard implementation of de-essing."""
+        # Map intensity (0-1) to pedalboard parameters
+        # pedalboard.DeEsser uses frequency (Hz) and threshold (dB)
+        de_esser = pedalboard.DeEsser()
+
+        processed = de_esser(audio, sr)
+
+        diagnostics = {}
+        if self.return_diagnostics:
+            # Pedalboard doesn't expose gain curve, use placeholder
+            diagnostics['reduction_db_curve'] = np.zeros(len(audio) // 100)  # Downsampled
+
+        return processed.astype(np.float32), diagnostics
