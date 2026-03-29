@@ -169,6 +169,63 @@ python build_exe.py
 The executable will be in `dist/SkyrimNet-LuxTTS.exe`. Include the `speakers/`
 directory when distributing.
 
+## Audio Post-Processing
+
+LuxTTS includes a composable DSP post-processing pipeline to improve output quality:
+
+- **De-esser**: Reduces harsh sibilance ("s", "sh" sounds)
+- **EQ**: Tames metallic high-frequency artifacts, adds vocal warmth
+- **Compressor**: Evens out volume inconsistencies with soft-knee dynamics
+- **Pitch Shift**: Adjusts voice pitch (manual or auto-detected from dialogue text)
+- **Loudness Normalization**: Ensures consistent output levels
+
+### Usage
+
+The post-processing pipeline is enabled by default in both the Gradio UI and SkyrimNet API.
+
+#### Automatic Pitch Detection
+
+Pitch is automatically detected from dialogue text using these heuristics:
+- `ALL CAPS` → +2 semitones (shouting)
+- Ends with `!` → +1 semitone (excited)
+- Ends with `?` → +0.5 semitone (questioning)
+- Contains `...` → -1 semitone (hesitant)
+- Long text (>200 chars) → -0.5 semitone (narrative)
+- Manual override available via `pitch_shift` parameter
+
+#### Optional Dependencies
+
+For higher-quality DSP processing, install optional dependencies:
+
+```bash
+uv pip install pedalboard pyloudnorm
+```
+
+- `pedalboard`: Provides high-quality EQ, compressor, and de-esser implementations
+- `pyloudnorm`: Provides accurate ITU-R BS.1770 LUFS loudness measurement
+
+Without these, the pipeline falls back to `scipy`/`librosa` implementations (fully functional).
+
+### API Parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `enable_post_processing` | bool | True | Master toggle for the chain |
+| `pitch_shift` | float | None | Manual semitone override (None = auto) |
+| `eq_intensity` | float | 1.0 | EQ aggressiveness (0-1) |
+| `de_ess_intensity` | float | 0.5 | De-essing strength (0-1) |
+| `compressor_threshold_offset` | float | -6.0 | Threshold offset from signal RMS (dB) |
+| `compressor_ratio` | float | 4.0 | Compression ratio |
+| `target_loudness` | float | -16.0 | Target LUFS for normalization |
+
+### A/B Preview
+
+The Gradio UI (`SkyrimNet-LuxTTS.py`) provides an A/B preview feature:
+- **Processed Output**: Audio with full post-processing chain
+- **Raw Output**: Unprocessed model output (for comparison)
+
+Enable via "Save Raw (A/B Preview)" checkbox in the UI.
+
 ## Info
 
 Q: How is this different from ZipVoice?
