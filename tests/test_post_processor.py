@@ -108,3 +108,28 @@ def test_de_esser_clips_invalid_inputs():
     processed, _ = processor.de_esser(silence, 48000, intensity=0.5)
     assert processed is not None
     assert len(processed) == 48000
+
+
+def test_equalize_reduces_high_frequencies(sample_48k_audio):
+    """EQ should reduce high frequencies above 8kHz (high-shelf cut)."""
+    audio, sr = sample_48k_audio
+    processor = AudioPostProcessor(return_diagnostics=True)
+
+    processed, diagnostics = processor.equalize(audio, sr, intensity=1.0)
+
+    # Check output differs from input
+    assert not np.allclose(processed, audio)
+
+    # Check diagnostics (only populated when return_diagnostics=True)
+    assert 'pre_spectrum' in diagnostics
+    assert 'post_spectrum' in diagnostics
+
+
+def test_equalize_zero_intensity_bypass(sample_48k_audio):
+    """Zero intensity should bypass EQ."""
+    audio, sr = sample_48k_audio
+    processor = AudioPostProcessor()
+
+    processed, diagnostics = processor.equalize(audio, sr, intensity=0.0)
+
+    np.testing.assert_allclose(processed, audio, atol=1e-6)

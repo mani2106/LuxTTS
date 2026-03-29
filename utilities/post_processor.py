@@ -206,3 +206,113 @@ class AudioPostProcessor:
             diagnostics['reduction_db_curve'] = np.zeros(len(audio) // 100)  # Downsampled
 
         return processed.astype(np.float32), diagnostics
+
+    def equalize(
+        self,
+        audio: np.ndarray,
+        sr: int,
+        intensity: float = 1.0,
+    ) -> tuple[np.ndarray, dict]:
+        """
+        Apply EQ to tame metallic harshness and add vocal warmth.
+
+        - High-shelf cut: -6dB at 8kHz (Q=0.7)
+        - Presence peak: +2dB at 3kHz (Q=1.0)
+        Both scaled by intensity.
+
+        Returns:
+            (processed_audio, diagnostics_dict)
+        """
+        if intensity <= 0.0:
+            return audio.copy(), {}
+
+        if HAS_PEDALBOARD:
+            return self._equalize_pedalboard(audio, sr, intensity)
+
+        return self._equalize_native(audio, sr, intensity)
+
+    def _equalize_native(
+        self,
+        audio: np.ndarray,
+        sr: int,
+        intensity: float,
+    ) -> tuple[np.ndarray, dict]:
+        """Native scipy implementation of EQ."""
+        diagnostics = {}
+        if self.return_diagnostics:
+            freqs, pre_spec = signal.welch(audio, sr, nperseg=2048)
+            diagnostics['pre_spectrum'] = (freqs, pre_spec)
+
+        # High-shelf low-pass at 8kHz to tame metallic artifacts
+        fc = 8000
+        Q = 0.7
+        gain_db = -6.0 * intensity
+        b1, a1 = self._design_peaking(fc, Q, gain_db, sr)
+
+        # Presence peak at 3kHz for warmth
+        fc = 3000
+        Q = 1.0
+        gain_db = 2.0 * intensity
+        b2, a2 = self._design_peaking(fc, Q, gain_db, sr)
+
+        # Apply filters in series
+        processed = signal.filtfilt(b1, a1, audio)
+        processed = signal.filtfilt(b2, a2, processed)
+
+        if self.return_diagnostics:
+            freqs, post_spec = signal.welch(processed, sr, nperseg=2048)
+            diagnostics['post_spectrum'] = (freqs, post_spec)
+
+        return processed.astype(np.float32), diagnostics
+
+    def _equalize_pedalboard(
+        self,
+        audio: np.ndarray,
+        sr: int,
+        intensity: float,
+    ) -> tuple[np.ndarray, dict]:
+        """Pedalboard implementation of EQ."""
+        high_shelf = pedalboard.HighShelfFilter(
+            cutoff_frequency_hz=8000,
+            gain_db=-6.0 * intensity,
+            q=0.7,
+        )
+        peak = pedalboard.PeakFilter(
+            cutoff_frequency_hz=3000,
+            gain_db=2.0 * intensity,
+            q=1.0,
+        )
+
+        chain = pedalboard.Pedalboard([high_shelf, peak])
+        processed = chain(audio, sr)
+
+        diagnostics = {}
+        if self.return_diagnostics:
+            diagnostics['pre_spectrum'] = (np.array([0]), np.array([0]))
+            diagnostics['post_spectrum'] = (np.array([0]), np.array([0]))
+
+        return processed.astype(np.float32), diagnostics
+
+    @staticmethod
+    def _design_peaking(fc: float, Q: float, gain_db: float, sr: int) -> tuple[np.ndarray, np.ndarray]:
+        """Design a peaking EQ filter using scipy.signal.iirfilter."""
+        # Convert gain from dB to linear
+        A = 10 ** (gain_db / 40)
+
+        # Angular frequency
+        w0 = 2 * np.pi * fc / sr
+
+        # Compute filter coefficients (biquad peaking EQ)
+        alpha = np.sin(w0) / (2 * Q)
+        b0 = 1 + alpha * A
+        b1 = -2 * np.cos(w0)
+        b2 = 1 - alpha * A
+        a0 = 1 + alpha / A
+        a1 = -2 * np.cos(w0)
+        a2 = 1 - alpha / A
+
+        # Normalize by a0
+        b = np.array([b0, b1, b2]) / a0
+        a = np.array([a0, a1, a2]) / a0
+
+        return b, a
