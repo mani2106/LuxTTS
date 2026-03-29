@@ -232,6 +232,15 @@ async def start_generation(request: Request):
     seed_num = data[26] if len(data) > 26 else None
     randomize_seed = data[27] if len(data) > 27 else True
 
+    # --- Post-processing parameters (optional, use defaults if not provided) ---
+    enable_post_processing = data[28] if len(data) > 28 and data[28] is not None else True
+    pitch_shift = data[29] if len(data) > 29 else None
+    eq_intensity = data[30] if len(data) > 30 else 1.0
+    de_ess_intensity = data[31] if len(data) > 31 else 0.5
+    compressor_threshold = data[32] if len(data) > 32 else -6.0
+    compressor_ratio = data[33] if len(data) > 33 else 4.0
+    target_loudness = data[34] if len(data) > 34 else -16.0
+
     # --- Ping / health-check ---
     if text == "ping":
         event_id = str(uuid.uuid4())
@@ -270,6 +279,13 @@ async def start_generation(request: Request):
                     speed=config.default_speed,
                     num_steps=config.default_num_steps,
                     config=config,
+                    enable_post_processing=enable_post_processing,
+                    pitch_shift=pitch_shift,
+                    eq_intensity=eq_intensity,
+                    de_ess_intensity=de_ess_intensity,
+                    compressor_threshold_offset=compressor_threshold,
+                    compressor_ratio=compressor_ratio,
+                    target_loudness=target_loudness,
                 ))
             ),
             timeout=GENERATION_TIMEOUT,
@@ -358,16 +374,22 @@ async def gradio_config():
             ],
             {"id": 26, "type": "number", "props": {"label": "Seed", "value": 420}},
             {"id": 27, "type": "checkbox", "props": {"label": "Randomize Seed", "value": True}},
-            {"id": 28, "type": "textbox", "props": {"label": "Unconditional Keys", "visible": False}},
-            {"id": 29, "type": "audio", "props": {"label": "Output Audio", "type": "filepath"}},
-            {"id": 30, "type": "number", "props": {"label": "Seed Used"}},
+            {"id": 28, "type": "checkbox", "props": {"label": "Enable Post-Processing", "value": True}},
+            {"id": 29, "type": "slider", "props": {"label": "Pitch Shift", "minimum": -12, "maximum": 12, "step": 0.5, "value": 0}},
+            {"id": 30, "type": "slider", "props": {"label": "EQ Intensity", "minimum": 0, "maximum": 1, "step": 0.1, "value": 1.0}},
+            {"id": 31, "type": "slider", "props": {"label": "De-Ess Intensity", "minimum": 0, "maximum": 1, "step": 0.1, "value": 0.5}},
+            {"id": 32, "type": "slider", "props": {"label": "Compressor Threshold", "minimum": -30, "maximum": 0, "step": 1, "value": -6.0}},
+            {"id": 33, "type": "slider", "props": {"label": "Compressor Ratio", "minimum": 1, "maximum": 20, "step": 0.5, "value": 4.0}},
+            {"id": 34, "type": "slider", "props": {"label": "Target Loudness", "minimum": -30, "maximum": -5, "step": 1, "value": -16.0}},
+            {"id": 35, "type": "audio", "props": {"label": "Output Audio", "type": "filepath"}},
+            {"id": 36, "type": "number", "props": {"label": "Seed Used"}},
         ],
         "dependencies": [
             {
                 "id": 0,
                 "api_name": "generate_audio",
-                "inputs": list(range(29)),
-                "outputs": [29, 30],
+                "inputs": list(range(35)),
+                "outputs": [35, 36],
             }
         ],
     }
