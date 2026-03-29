@@ -103,13 +103,76 @@ def build_interface(config: AppConfig) -> gr.Blocks:
                         value=True,
                     )
 
+                with gr.Accordion("Post-Processing", open=False):
+                    enable_post_processing = gr.Checkbox(
+                        label="Enable Post-Processing",
+                        value=True,
+                    )
+
+                    pitch_shift = gr.Slider(
+                        label="Pitch Shift (semitones, empty=auto)",
+                        minimum=-12.0,
+                        maximum=12.0,
+                        step=0.5,
+                        value=0.0,
+                    )
+
+                    eq_intensity = gr.Slider(
+                        label="EQ Intensity",
+                        minimum=0.0,
+                        maximum=1.0,
+                        step=0.1,
+                        value=1.0,
+                    )
+
+                    de_ess_intensity = gr.Slider(
+                        label="De-Ess Intensity",
+                        minimum=0.0,
+                        maximum=1.0,
+                        step=0.1,
+                        value=0.5,
+                    )
+
+                    compressor_threshold = gr.Slider(
+                        label="Compressor Threshold Offset (dB)",
+                        minimum=-30.0,
+                        maximum=0.0,
+                        step=1.0,
+                        value=-6.0,
+                    )
+
+                    compressor_ratio = gr.Slider(
+                        label="Compressor Ratio",
+                        minimum=1.0,
+                        maximum=20.0,
+                        step=0.5,
+                        value=4.0,
+                    )
+
+                    target_loudness = gr.Slider(
+                        label="Target Loudness (LUFS)",
+                        minimum=-30.0,
+                        maximum=-5.0,
+                        step=1.0,
+                        value=-16.0,
+                    )
+
+                    save_raw_for_ab = gr.Checkbox(
+                        label="Save Raw (A/B Preview)",
+                        value=True,
+                    )
+
         with gr.Row():
             generate_btn = gr.Button("Generate", variant="primary")
 
         with gr.Row():
             output_audio = gr.Audio(
-                label="Output",
+                label="Processed Output",
                 autoplay=True,
+            )
+            output_raw = gr.Audio(
+                label="Raw Output (no post-processing)",
+                autoplay=False,
             )
             output_seed = gr.Number(
                 label="Seed Used",
@@ -126,8 +189,16 @@ def build_interface(config: AppConfig) -> gr.Blocks:
             num_steps,
             seed,
             randomize_seed,
+            enable_post_processing,
+            pitch_shift,
+            eq_intensity,
+            de_ess_intensity,
+            compressor_threshold,
+            compressor_ratio,
+            target_loudness,
+            save_raw_for_ab,
         ):
-            return await generate_audio(
+            result = await generate_audio(
                 text=text or "",
                 speaker_audio=speaker_audio_file,
                 language=language,
@@ -137,7 +208,23 @@ def build_interface(config: AppConfig) -> gr.Blocks:
                 speed=speed,
                 num_steps=int(num_steps),
                 config=config,
+                enable_post_processing=enable_post_processing,
+                pitch_shift=float(pitch_shift) if pitch_shift != 0.0 else None,
+                eq_intensity=eq_intensity,
+                de_ess_intensity=de_ess_intensity,
+                compressor_threshold_offset=compressor_threshold,
+                compressor_ratio=compressor_ratio,
+                target_loudness=target_loudness,
+                save_raw=save_raw_for_ab,
             )
+
+            # Handle different return types
+            if isinstance(result, tuple) and len(result) == 4:
+                processed_path, seed_used, raw_path, diagnostics = result
+                return processed_path, seed_used, raw_path
+            else:
+                processed_path, seed_used = result
+                return processed_path, seed_used, None
 
         generate_btn.click(
             fn=do_generate,
@@ -150,8 +237,16 @@ def build_interface(config: AppConfig) -> gr.Blocks:
                 num_steps,
                 seed,
                 randomize_seed,
+                enable_post_processing,
+                pitch_shift,
+                eq_intensity,
+                de_ess_intensity,
+                compressor_threshold,
+                compressor_ratio,
+                target_loudness,
+                save_raw_for_ab,
             ],
-            outputs=[output_audio, output_seed],
+            outputs=[output_audio, output_seed, output_raw],
             api_name="generate_audio",  # This is the endpoint SkyrimNet calls
         )
 
