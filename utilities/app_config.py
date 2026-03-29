@@ -12,6 +12,10 @@ from utilities.app_constants import (
     DEFAULT_GUIDANCE_SCALE,
     DEFAULT_SPEED,
     DEFAULT_SEED,
+    DEFAULT_RMS,
+    DEFAULT_T_SHIFT,
+    DEFAULT_RETURN_SMOOTH,
+    DEFAULT_REF_DURATION,
 )
 
 
@@ -28,6 +32,10 @@ class AppConfig:
     default_guidance_scale: float = DEFAULT_GUIDANCE_SCALE
     default_speed: float = DEFAULT_SPEED
     default_seed: int = DEFAULT_SEED
+    default_rms: float = DEFAULT_RMS
+    default_t_shift: float = DEFAULT_T_SHIFT
+    default_return_smooth: bool = DEFAULT_RETURN_SMOOTH
+    default_ref_duration: int = DEFAULT_REF_DURATION
     share: bool = False
     inbrowser: bool = False
 

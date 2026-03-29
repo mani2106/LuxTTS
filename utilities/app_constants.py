@@ -9,10 +9,14 @@ DEFAULT_DEVICE = "cuda"
 DEFAULT_MODEL_PATH = "YatharthS/LuxTTS"
 
 # Generation defaults
-DEFAULT_NUM_STEPS = 4
+DEFAULT_NUM_STEPS = 8
 DEFAULT_GUIDANCE_SCALE = 3.0
-DEFAULT_SPEED = 1.0
+DEFAULT_SPEED = 0.8
 DEFAULT_SEED = 420
+DEFAULT_RMS = 0.03  # Higher makes it sound louder
+DEFAULT_T_SHIFT = 0.9  # Sampling param, higher can sound better but worse WER
+DEFAULT_RETURN_SMOOTH = True  # Makes it sound smoother possibly but less cleaner
+DEFAULT_REF_DURATION = 10  # Lower speeds up inference; set to 1000 if artifacts in beginning
 
 # Cache configuration
 CACHE_DIR = Path("cache")

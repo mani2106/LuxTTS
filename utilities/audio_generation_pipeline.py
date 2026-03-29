@@ -16,6 +16,12 @@ from utilities.app_constants import (
     PING_TEXT,
     PING_DURATION_SEC,
     SAMPLE_RATE,
+    DEFAULT_RMS,
+    DEFAULT_T_SHIFT,
+    DEFAULT_RETURN_SMOOTH,
+    DEFAULT_REF_DURATION,
+    DEFAULT_SPEED,
+    DEFAULT_NUM_STEPS,
 )
 from utilities.model_utils import load_model_if_needed
 from utilities.cache_utils import get_audio_file_hash, get_cached_embedding, cache_embedding
@@ -33,8 +39,10 @@ async def generate_audio(
     cfg_scale: float = 3.0,
     seed: int = 420,
     randomize_seed: bool = True,
-    speed: float = 1.0,
-    num_steps: int = 4,
+    speed: float = DEFAULT_SPEED,
+    num_steps: int = DEFAULT_NUM_STEPS,
+    t_shift: float = DEFAULT_T_SHIFT,
+    return_smooth: bool = DEFAULT_RETURN_SMOOTH,
     config: AppConfig = None,
 ) -> Tuple[str, int]:
     """
@@ -49,6 +57,8 @@ async def generate_audio(
         randomize_seed: Whether to randomize seed before generation
         speed: Speech speed multiplier
         num_steps: Flow matching steps (4 for distilled model)
+        t_shift: Sampling shift, higher can sound better but worse WER
+        return_smooth: If True, disables 48k upsampling for smoother output
         config: App configuration
 
     Returns:
@@ -77,6 +87,8 @@ async def generate_audio(
         num_steps=num_steps,
         guidance_scale=cfg_scale,
         speed=speed,
+        t_shift=t_shift,
+        return_smooth=return_smooth,
     )
 
     # Save output
@@ -131,8 +143,8 @@ async def _get_speaker_encoding(
         logger.info(f"Encoding speaker from {audio_path}...")
         encode_dict = model.encode_prompt(
             prompt_audio=str(audio_path),
-            duration=5,
-            rms=0.01,
+            duration=DEFAULT_REF_DURATION,
+            rms=DEFAULT_RMS,
         )
         # Cache the result
         cache_embedding(cache_key, encode_dict, EMBEDS_CACHE_DIR)
@@ -155,8 +167,8 @@ async def _get_speaker_encoding(
         logger.info(f"Encoding fallback speaker from {fallback_path}...")
         encode_dict = model.encode_prompt(
             prompt_audio=str(fallback_path),
-            duration=5,
-            rms=0.01,
+            duration=DEFAULT_REF_DURATION,
+            rms=DEFAULT_RMS,
         )
         cache_embedding(fallback_key, encode_dict, EMBEDS_CACHE_DIR)
         return encode_dict
@@ -190,8 +202,8 @@ async def init_speaker_cache(config: AppConfig):
             logger.info(f"Pre-encoding: {audio_path.name}")
             encode_dict = model.encode_prompt(
                 prompt_audio=str(audio_path),
-                duration=5,
-                rms=0.01,
+                duration=DEFAULT_REF_DURATION,
+                rms=DEFAULT_RMS,
             )
             cache_embedding(cache_key, encode_dict, EMBEDS_CACHE_DIR)
 
