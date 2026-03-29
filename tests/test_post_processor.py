@@ -133,3 +133,47 @@ def test_equalize_zero_intensity_bypass(sample_48k_audio):
     processed, diagnostics = processor.equalize(audio, sr, intensity=0.0)
 
     np.testing.assert_allclose(processed, audio, atol=1e-6)
+
+
+def test_pitch_shift_positive_semitones(sample_48k_audio):
+    """Positive semitones should raise pitch."""
+    audio, sr = sample_48k_audio
+    processor = AudioPostProcessor(return_diagnostics=True)
+
+    processed, diagnostics = processor.pitch_shift(audio, sr, n_steps=2.0)
+
+    # Check that output differs from input
+    assert not np.allclose(processed, audio)
+
+    # Check diagnostics
+    assert 'semitones_applied' in diagnostics
+    assert diagnostics['semitones_applied'] == 2.0
+
+
+def test_pitch_shift_zero_steps_bypass(sample_48k_audio):
+    """Zero semitones should bypass processing (output ≈ input)."""
+    audio, sr = sample_48k_audio
+    processor = AudioPostProcessor()
+
+    processed, diagnostics = processor.pitch_shift(audio, sr, n_steps=0.0)
+
+    # With zero steps, output should be very close to input
+    np.testing.assert_allclose(processed, audio, atol=1e-6)
+
+    # No diagnostics for bypass
+    assert diagnostics == {}
+
+
+def test_pitch_shift_negative_semitones(sample_48k_audio):
+    """Negative semitones should lower pitch."""
+    audio, sr = sample_48k_audio
+    processor = AudioPostProcessor(return_diagnostics=True)
+
+    processed, diagnostics = processor.pitch_shift(audio, sr, n_steps=-1.5)
+
+    # Check that output differs from input
+    assert not np.allclose(processed, audio)
+
+    # Check diagnostics
+    assert 'semitones_applied' in diagnostics
+    assert diagnostics['semitones_applied'] == -1.5

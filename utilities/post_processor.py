@@ -4,6 +4,7 @@ import logging
 import re
 from typing import Optional
 
+import librosa
 import numpy as np
 import scipy.signal as signal
 
@@ -293,6 +294,44 @@ class AudioPostProcessor:
 
         return processed.astype(np.float32), diagnostics
 
+    def pitch_shift(
+        self,
+        audio: np.ndarray,
+        sr: int,
+        n_steps: float,
+    ) -> tuple[np.ndarray, dict]:
+        """
+        Shift pitch by n_steps semitones.
+
+        Uses librosa.effects.pitch_shift() which time-stretches the audio
+        to preserve duration while changing pitch.
+
+        Args:
+            audio: Input audio (float32, any sample rate)
+            sr: Sample rate
+            n_steps: Pitch shift in semitones (positive = higher, negative = lower)
+
+        Returns:
+            (processed_audio, diagnostics_dict) where diagnostics contains
+            'semitones_applied': float value of semitones shifted
+        """
+        # Bypass for near-zero pitch shifts to avoid unnecessary processing
+        if abs(n_steps) < 0.01:
+            return audio.copy(), {}
+
+        # Apply pitch shift using librosa
+        processed = librosa.effects.pitch_shift(
+            y=audio.astype(np.float64),
+            sr=sr,
+            n_steps=n_steps,
+        )
+
+        diagnostics = {}
+        if self.return_diagnostics:
+            diagnostics['semitones_applied'] = float(n_steps)
+
+        return processed.astype(np.float32), diagnostics
+
     @staticmethod
     def _design_peaking(fc: float, Q: float, gain_db: float, sr: int) -> tuple[np.ndarray, np.ndarray]:
         """Design a peaking EQ filter using scipy.signal.iirfilter."""
@@ -316,3 +355,114 @@ class AudioPostProcessor:
         a = np.array([a0, a1, a2]) / a0
 
         return b, a
+
+    def normalize_loudness(
+        self,
+        audio: np.ndarray,
+        sr: int,
+        target_lufs: float = -16.0,
+    ) -> tuple[np.ndarray, dict]:
+        """
+        Normalize audio to target LUFS with hard peak limiting.
+
+        Measures current loudness using pyloudnorm (ITU-R BS.1770-4) if available,
+        otherwise falls back to RMS-based estimation. Applies gain to reach target
+        LUFS, then enforces -1 dBTP peak limit to prevent clipping.
+
+        Args:
+            audio: Input audio (float32, any sample rate)
+            sr: Sample rate
+            target_lufs: Target loudness in LUFS (default: -16.0 for speech)
+
+        Returns:
+            (processed_audio, diagnostics_dict)
+            Diagnostics contain:
+                - measured_lufs: Measured loudness before processing (LUFS)
+                - gain_applied_db: Gain applied to reach target (dB)
+                - peak_limiting_applied: Whether peak limiter was triggered (bool)
+        """
+        if HAS_PLOUDNORM:
+            measured_lufs = self._measure_loudness_pyloudnorm(audio, sr)
+        else:
+            measured_lufs = self._measure_loudness_rms_fallback(audio)
+
+        # Calculate gain needed to reach target
+        gain_db = target_lufs - measured_lufs
+        gain_linear = 10 ** (gain_db / 20)
+
+        # Apply gain
+        processed = audio * gain_linear
+
+        # Hard peak limiter at -1 dBTP (0.89 linear)
+        peak_limit_linear = 10 ** (-1.0 / 20)
+        peak_limiting_applied = False
+
+        if np.max(np.abs(processed)) > peak_limit_linear:
+            peak_limiting_applied = True
+            # Soft clipping with hard limit at threshold
+            processed = np.clip(processed, -peak_limit_linear, peak_limit_linear)
+
+        diagnostics = {
+            'measured_lufs': float(measured_lufs),
+            'gain_applied_db': float(gain_db),
+            'peak_limiting_applied': peak_limiting_applied,
+        }
+
+        return processed.astype(np.float32), diagnostics
+
+    def _measure_loudness_pyloudnorm(self, audio: np.ndarray, sr: int) -> float:
+        """
+        Measure loudness using pyloudnorm (ITU-R BS.1770-4).
+
+        Args:
+            audio: Input audio (mono or stereo)
+            sr: Sample rate
+
+        Returns:
+            Loudness in LUFS
+        """
+        import pyloudnorm as pyln
+
+        # Ensure 2D array for stereo compatibility (samples, channels)
+        if audio.ndim == 1:
+            audio_2d = audio.reshape(-1, 1)
+        else:
+            audio_2d = audio.T  # Convert to (samples, channels)
+
+        meter = pyln.Meter(sr)
+        loudness = meter.integrated_loudness(audio_2d)
+
+        return float(loudness)
+
+    @staticmethod
+    def _measure_loudness_rms_fallback(audio: np.ndarray) -> float:
+        """
+        Estimate loudness using RMS level (fallback when pyloudnorm unavailable).
+
+        Note: This is a rough approximation. True LUFS measurement requires
+        frequency-weighted filtering (K-weighting) and gating as specified in
+        ITU-R BS.1770-4. RMS correlates roughly with LUFS but is not equivalent.
+
+        Args:
+            audio: Input audio (mono or stereo)
+
+        Returns:
+            Estimated loudness in LUFS-equivalent units
+        """
+        # Calculate RMS level
+        if audio.ndim == 1:
+            rms = np.sqrt(np.mean(audio ** 2))
+        else:
+            # Multi-channel: average RMS across channels
+            rms_per_channel = np.sqrt(np.mean(audio ** 2, axis=0))
+            rms = np.mean(rms_per_channel)
+
+        # Convert RMS to dB (reference: 1.0)
+        rms_db = 20 * np.log10(rms + 1e-10)
+
+        # Rough conversion from RMS dB to LUFS-equivalent
+        # This is an approximation; typical speech at -16 LUFS has RMS around -20 dB
+        # We shift by ~4 dB to get a reasonable LUFS estimate
+        estimated_lufs = rms_db - 4.0
+
+        return float(estimated_lufs)
