@@ -9,6 +9,19 @@ import scipy.signal as signal
 
 logger = logging.getLogger(__name__)
 
+# Optional dependency detection
+try:
+    import pedalboard
+    HAS_PEDALBOARD = True
+except ImportError:
+    HAS_PEDALBOARD = False
+
+try:
+    import pyloudnorm as pyln
+    HAS_PYLUDNORM = True
+except ImportError:
+    HAS_PYLUDNORM = False
+
 
 class PitchDetector:
     """
