@@ -23,3 +23,8 @@ jieba
 piper_phonemize
 pypinyin
 setuptools<81
+
+# Optional post-processing dependencies
+# These provide higher-quality DSP but are not required
+pedalboard  # Optional: high-quality EQ, compressor, de-esser
+pyloudnorm  # Optional: proper LUFS loudness normalization
