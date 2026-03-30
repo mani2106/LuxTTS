@@ -109,12 +109,18 @@ def build_interface(config: AppConfig) -> gr.Blocks:
                         value=True,
                     )
 
+                    auto_pitch = gr.Checkbox(
+                        label="Auto-detect pitch from text",
+                        value=True,
+                    )
+
                     pitch_shift = gr.Slider(
-                        label="Pitch Shift (semitones, empty=auto)",
+                        label="Pitch Shift (semitones, or 0 for auto-detect)",
                         minimum=-12.0,
                         maximum=12.0,
                         step=0.5,
                         value=0.0,
+                        interactive=True,
                     )
 
                     eq_intensity = gr.Slider(
@@ -146,6 +152,14 @@ def build_interface(config: AppConfig) -> gr.Blocks:
                         minimum=1.0,
                         maximum=20.0,
                         step=0.5,
+                        value=4.0,
+                    )
+
+                    compressor_knee = gr.Slider(
+                        label="Compressor Knee (dB)",
+                        minimum=0.0,
+                        maximum=12.0,
+                        step=1.0,
                         value=4.0,
                     )
 
@@ -190,14 +204,20 @@ def build_interface(config: AppConfig) -> gr.Blocks:
             seed,
             randomize_seed,
             enable_post_processing,
+            auto_pitch,
             pitch_shift,
             eq_intensity,
             de_ess_intensity,
             compressor_threshold,
             compressor_ratio,
+            compressor_knee,
             target_loudness,
             save_raw_for_ab,
         ):
+            # Determine pitch_shift: if auto_pitch is True and pitch_shift is 0.0, use None (auto-detect)
+            # Otherwise use the explicit value (including 0.0 if user explicitly set it)
+            final_pitch_shift = None if (auto_pitch and pitch_shift == 0.0) else float(pitch_shift)
+
             result = await generate_audio(
                 text=text or "",
                 speaker_audio=speaker_audio_file,
@@ -209,11 +229,15 @@ def build_interface(config: AppConfig) -> gr.Blocks:
                 num_steps=int(num_steps),
                 config=config,
                 enable_post_processing=enable_post_processing,
-                pitch_shift=float(pitch_shift) if pitch_shift != 0.0 else None,
+                pitch_shift=final_pitch_shift,
                 eq_intensity=eq_intensity,
                 de_ess_intensity=de_ess_intensity,
                 compressor_threshold_offset=compressor_threshold,
                 compressor_ratio=compressor_ratio,
+                compressor_knee_db=compressor_knee,
+                compressor_attack_ms=config.default_compressor_attack_ms,
+                compressor_release_ms=config.default_compressor_release_ms,
+                max_gain_reduction_db=config.default_max_gain_reduction_db,
                 target_loudness=target_loudness,
                 save_raw=save_raw_for_ab,
             )
@@ -238,11 +262,13 @@ def build_interface(config: AppConfig) -> gr.Blocks:
                 seed,
                 randomize_seed,
                 enable_post_processing,
+                auto_pitch,
                 pitch_shift,
                 eq_intensity,
                 de_ess_intensity,
                 compressor_threshold,
                 compressor_ratio,
+                compressor_knee,
                 target_loudness,
                 save_raw_for_ab,
             ],

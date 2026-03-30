@@ -234,12 +234,22 @@ async def start_generation(request: Request):
 
     # --- Post-processing parameters (optional, use defaults if not provided) ---
     enable_post_processing = data[28] if len(data) > 28 and data[28] is not None else True
-    pitch_shift = data[29] if len(data) > 29 else None
-    eq_intensity = data[30] if len(data) > 30 else 1.0
-    de_ess_intensity = data[31] if len(data) > 31 else 0.5
-    compressor_threshold = data[32] if len(data) > 32 else -6.0
-    compressor_ratio = data[33] if len(data) > 33 else 4.0
-    target_loudness = data[34] if len(data) > 34 else -16.0
+    auto_pitch = data[29] if len(data) > 29 else True
+    pitch_shift_raw = data[30] if len(data) > 30 else 0.0
+    # Convert auto_pitch + pitch_shift_raw to single pitch_shift parameter
+    # If auto_pitch is True and pitch_shift_raw is 0.0, use None (auto-detect)
+    # Otherwise use the explicit value
+    if auto_pitch and pitch_shift_raw == 0.0:
+        pitch_shift = None  # Auto-detect from text
+    else:
+        pitch_shift = float(pitch_shift_raw) if pitch_shift_raw != 0.0 else None
+    eq_intensity = data[31] if len(data) > 31 else 1.0
+    de_ess_intensity = data[32] if len(data) > 32 else 0.5
+    compressor_threshold = data[33] if len(data) > 33 else -6.0
+    compressor_ratio = data[34] if len(data) > 34 else 4.0
+    compressor_knee_db = data[35] if len(data) > 35 else 4.0
+    target_loudness = data[36] if len(data) > 36 else -16.0
+    save_raw = data[37] if len(data) > 37 else True
 
     # --- Ping / health-check ---
     if text == "ping":
@@ -285,7 +295,12 @@ async def start_generation(request: Request):
                     de_ess_intensity=de_ess_intensity,
                     compressor_threshold_offset=compressor_threshold,
                     compressor_ratio=compressor_ratio,
+                    compressor_knee_db=compressor_knee_db,
+                    compressor_attack_ms=config.default_compressor_attack_ms,
+                    compressor_release_ms=config.default_compressor_release_ms,
+                    max_gain_reduction_db=config.default_max_gain_reduction_db,
                     target_loudness=target_loudness,
+                    save_raw=save_raw,
                 ))
             ),
             timeout=GENERATION_TIMEOUT,
@@ -375,21 +390,24 @@ async def gradio_config():
             {"id": 26, "type": "number", "props": {"label": "Seed", "value": 420}},
             {"id": 27, "type": "checkbox", "props": {"label": "Randomize Seed", "value": True}},
             {"id": 28, "type": "checkbox", "props": {"label": "Enable Post-Processing", "value": True}},
-            {"id": 29, "type": "slider", "props": {"label": "Pitch Shift", "minimum": -12, "maximum": 12, "step": 0.5, "value": 0}},
-            {"id": 30, "type": "slider", "props": {"label": "EQ Intensity", "minimum": 0, "maximum": 1, "step": 0.1, "value": 1.0}},
-            {"id": 31, "type": "slider", "props": {"label": "De-Ess Intensity", "minimum": 0, "maximum": 1, "step": 0.1, "value": 0.5}},
-            {"id": 32, "type": "slider", "props": {"label": "Compressor Threshold", "minimum": -30, "maximum": 0, "step": 1, "value": -6.0}},
-            {"id": 33, "type": "slider", "props": {"label": "Compressor Ratio", "minimum": 1, "maximum": 20, "step": 0.5, "value": 4.0}},
-            {"id": 34, "type": "slider", "props": {"label": "Target Loudness", "minimum": -30, "maximum": -5, "step": 1, "value": -16.0}},
-            {"id": 35, "type": "audio", "props": {"label": "Output Audio", "type": "filepath"}},
-            {"id": 36, "type": "number", "props": {"label": "Seed Used"}},
+            {"id": 29, "type": "checkbox", "props": {"label": "Auto-detect Pitch from Text", "value": True}},
+            {"id": 30, "type": "slider", "props": {"label": "Pitch Shift (semitones, 0=auto)", "minimum": -12, "maximum": 12, "step": 0.5, "value": 0}},
+            {"id": 31, "type": "slider", "props": {"label": "EQ Intensity", "minimum": 0, "maximum": 1, "step": 0.1, "value": 1.0}},
+            {"id": 32, "type": "slider", "props": {"label": "De-Ess Intensity", "minimum": 0, "maximum": 1, "step": 0.1, "value": 0.5}},
+            {"id": 33, "type": "slider", "props": {"label": "Compressor Threshold Offset (dB)", "minimum": -30, "maximum": 0, "step": 1, "value": -6.0}},
+            {"id": 34, "type": "slider", "props": {"label": "Compressor Ratio", "minimum": 1, "maximum": 20, "step": 0.5, "value": 4.0}},
+            {"id": 35, "type": "slider", "props": {"label": "Compressor Knee (dB)", "minimum": 0, "maximum": 12, "step": 1, "value": 4.0}},
+            {"id": 36, "type": "slider", "props": {"label": "Target Loudness (LUFS)", "minimum": -30, "maximum": -5, "step": 1, "value": -16.0}},
+            {"id": 37, "type": "checkbox", "props": {"label": "Save Raw (A/B Preview)", "value": True}},
+            {"id": 38, "type": "audio", "props": {"label": "Output Audio", "type": "filepath"}},
+            {"id": 39, "type": "number", "props": {"label": "Seed Used"}},
         ],
         "dependencies": [
             {
                 "id": 0,
                 "api_name": "generate_audio",
-                "inputs": list(range(35)),
-                "outputs": [35, 36],
+                "inputs": list(range(38)),
+                "outputs": [38, 39],
             }
         ],
     }

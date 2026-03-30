@@ -1,7 +1,6 @@
 """Audio post-processing pipeline for LuxTTS output quality improvement."""
 
 import logging
-import re
 from typing import Optional
 
 import librosa
@@ -394,6 +393,11 @@ class AudioPostProcessor:
         if len(audio) == 0:
             return audio.copy(), {}
 
+        # Early return for near-silence (RMS < -60 dBFS) to avoid unnecessary processing
+        rms = np.sqrt(np.mean(audio ** 2))
+        if rms < 1e-3:  # ~-60 dBFS
+            return audio.copy(), {"input_lufs": -100.0, "output_lufs": -100.0, "bypassed": "near_silence"}
+
         # Use pedalboard if available, otherwise native scipy
         if HAS_PEDALBOARD:
             return self._compress_pedalboard(
@@ -635,7 +639,8 @@ class AudioPostProcessor:
         # Approximate LUFS from RMS (calibration factor based on typical speech)
         rms_db = 20 * np.log10(rms)
         # This is a rough approximation; true LUFS uses K-weighting
-        return rms_db - 3.0  # Typical offset for speech material
+        # Typical speech at -16 LUFS has RMS around -20 dB, so we shift by ~4 dB
+        return rms_db - 4.0  # Consistent with _measure_loudness_rms_fallback
 
     def normalize_loudness(
         self,
@@ -702,7 +707,7 @@ class AudioPostProcessor:
         Returns:
             Loudness in LUFS
         """
-        import pyloudnorm as pyln
+        import pyloudnorm as pyln  # Already imported at module level
 
         # Ensure 2D array for stereo compatibility (samples, channels)
         if audio.ndim == 1:
