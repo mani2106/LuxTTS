@@ -249,7 +249,6 @@ async def start_generation(request: Request):
     compressor_ratio = data[34] if len(data) > 34 else 4.0
     compressor_knee_db = data[35] if len(data) > 35 else 4.0
     target_loudness = data[36] if len(data) > 36 else -16.0
-    save_raw = data[37] if len(data) > 37 else True
 
     # --- Ping / health-check ---
     if text == "ping":
@@ -300,7 +299,7 @@ async def start_generation(request: Request):
                     compressor_release_ms=config.default_compressor_release_ms,
                     max_gain_reduction_db=config.default_max_gain_reduction_db,
                     target_loudness=target_loudness,
-                    save_raw=save_raw,
+                    save_raw=False,  # API never saves raw — A/B preview is Gradio-only
                 ))
             ),
             timeout=GENERATION_TIMEOUT,
