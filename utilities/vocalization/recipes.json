@@ -1,0 +1,146 @@
+{
+  "sighs": {
+    "tts_text": "haaah",
+    "tts_speed": 0.9,
+    "max_duration_s": 1.5,
+    "effects": [
+      {"type": "pitch_shift", "semitones": -3},
+      {"type": "low_pass_filter", "cutoff_hz": 800},
+      {"type": "breath_noise", "amplitude": 0.08},
+      {"type": "fade_out", "duration_s": 0.5}
+    ]
+  },
+  "groans": {
+    "tts_text": "uuugh",
+    "tts_speed": 0.7,
+    "max_duration_s": 2.0,
+    "effects": [
+      {"type": "pitch_shift", "semitones": -5},
+      {"type": "low_pass_filter", "cutoff_hz": 600},
+      {"type": "breath_noise", "amplitude": 0.06},
+      {"type": "volume", "factor": 1.2}
+    ]
+  },
+  "moans": {
+    "tts_text": "oooooh",
+    "tts_speed": 0.7,
+    "max_duration_s": 2.5,
+    "effects": [
+      {"type": "pitch_shift", "semitones": -4},
+      {"type": "low_pass_filter", "cutoff_hz": 700},
+      {"type": "breath_noise", "amplitude": 0.05},
+      {"type": "fade_out", "duration_s": 0.8}
+    ]
+  },
+  "gasps": {
+    "tts_text": "huh",
+    "tts_speed": 1.4,
+    "max_duration_s": 0.4,
+    "effects": [
+      {"type": "pitch_shift", "semitones": 2},
+      {"type": "breath_noise", "amplitude": 0.1},
+      {"type": "fade_out", "duration_s": 0.2}
+    ]
+  },
+  "screams": {
+    "tts_text": "aaaaah",
+    "tts_speed": 0.8,
+    "max_duration_s": 2.0,
+    "effects": [
+      {"type": "pitch_shift", "semitones": 5},
+      {"type": "distortion", "intensity": 0.6},
+      {"type": "high_shelf_boost", "frequency_hz": 4000, "gain_db": 6},
+      {"type": "compress", "threshold_db": -10, "ratio": 4},
+      {"type": "volume", "factor": 1.5}
+    ]
+  },
+  "shouts": {
+    "tts_text": "hey",
+    "tts_speed": 0.9,
+    "max_duration_s": 1.0,
+    "effects": [
+      {"type": "pitch_shift", "semitones": 3},
+      {"type": "distortion", "intensity": 0.3},
+      {"type": "high_shelf_boost", "frequency_hz": 3000, "gain_db": 4},
+      {"type": "volume", "factor": 1.3}
+    ]
+  },
+  "whispers": {
+    "tts_text": null,
+    "mode": "modify_speech",
+    "effects": [
+      {"type": "pitch_shift", "semitones": -2},
+      {"type": "high_pass_filter", "cutoff_hz": 800},
+      {"type": "breath_noise", "amplitude": 0.15},
+      {"type": "volume", "factor": 0.4}
+    ]
+  },
+  "breathes heavily": {
+    "tts_text": "haah huuh haah",
+    "tts_speed": 0.6,
+    "max_duration_s": 2.5,
+    "effects": [
+      {"type": "pitch_shift", "semitones": -2},
+      {"type": "low_pass_filter", "cutoff_hz": 500},
+      {"type": "breath_noise", "amplitude": 0.12},
+      {"type": "volume", "factor": 0.8}
+    ]
+  },
+  "clears throat": {
+    "tts_text": "ahem",
+    "tts_speed": 1.0,
+    "max_duration_s": 0.5,
+    "effects": [
+      {"type": "pitch_shift", "semitones": -1},
+      {"type": "high_pass_filter", "cutoff_hz": 1000},
+      {"type": "fade_out", "duration_s": 0.1}
+    ]
+  },
+  "coughs": {
+    "tts_text": "kugh kugh",
+    "tts_speed": 1.2,
+    "max_duration_s": 0.6,
+    "effects": [
+      {"type": "pitch_shift", "semitones": -2},
+      {"type": "low_pass_filter", "cutoff_hz": 1200},
+      {"type": "volume", "factor": 0.9}
+    ]
+  },
+  "laughs": {
+    "tts_text": "haha",
+    "tts_speed": 1.3,
+    "max_duration_s": 1.5,
+    "effects": [
+      {"type": "pitch_shift", "semitones": 1},
+      {"type": "high_pass_filter", "cutoff_hz": 1500},
+      {"type": "volume", "factor": 1.1}
+    ]
+  },
+  "sobs": {
+    "tts_text": "sob sob",
+    "tts_speed": 0.8,
+    "max_duration_s": 2.0,
+    "effects": [
+      {"type": "pitch_shift", "semitones": -3},
+      {"type": "low_pass_filter", "cutoff_hz": 900},
+      {"type": "breath_noise", "amplitude": 0.1},
+      {"type": "volume", "factor": 0.7}
+    ]
+  },
+  "whimpers": {
+    "tts_text": "whimper",
+    "tts_speed": 0.9,
+    "max_duration_s": 1.5,
+    "effects": [
+      {"type": "pitch_shift", "semitones": -4},
+      {"type": "low_pass_filter", "cutoff_hz": 700},
+      {"type": "breath_noise", "amplitude": 0.08},
+      {"type": "volume", "factor": 0.6}
+    ]
+  },
+  "pause": {
+    "tts_text": null,
+    "duration_s": 0.3,
+    "effects": []
+  }
+}
