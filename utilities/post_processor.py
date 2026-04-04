@@ -22,6 +22,17 @@ try:
 except ImportError:
     HAS_PLOUDNORM = False
 
+# TDR Nova VST3 plugin detection
+from utilities.app_constants import TDR_NOVA_VST3_PATH, TDR_NOVA_ENABLED
+
+HAS_TDR_NOVA = False
+if HAS_PEDALBOARD and TDR_NOVA_ENABLED:
+    if TDR_NOVA_VST3_PATH.exists():
+        HAS_TDR_NOVA = True
+        logger.debug(f"TDR Nova VST3 detected at {TDR_NOVA_VST3_PATH}")
+    else:
+        logger.info(f"TDR Nova VST3 not found at {TDR_NOVA_VST3_PATH}, using fallback backends")
+
 
 class PitchDetector:
     """
@@ -110,6 +121,86 @@ class AudioPostProcessor:
             return_diagnostics: If True, return diagnostic metrics from each stage.
         """
         self.return_diagnostics = return_diagnostics
+        self._tdr_nova_plugin = None  # Lazy-loaded VST3 plugin singleton
+
+    @property
+    def tdr_nova_plugin(self):
+        """
+        Lazy-load TDR Nova VST3 plugin as a singleton.
+
+        Thread safety: Loading is done once and cached. Not safe for concurrent
+        process() calls on the same instance, but LuxTTS processes audio sequentially.
+        """
+        if self._tdr_nova_plugin is None and HAS_TDR_NOVA:
+            try:
+                self._tdr_nova_plugin = pedalboard.load_plugin(str(TDR_NOVA_VST3_PATH))
+                logger.debug(f"TDR Nova VST3 loaded from {TDR_NOVA_VST3_PATH}")
+            except Exception as e:
+                logger.warning(f"Failed to load TDR Nova VST3: {e}. Using fallback backends.")
+                self._tdr_nova_plugin = None
+        return self._tdr_nova_plugin
+
+    def _process_tdr_nova(
+        self,
+        audio: np.ndarray,
+        sr: int,
+        de_ess_intensity: float,
+        eq_intensity: float,
+    ) -> tuple[np.ndarray, dict]:
+        """
+        Combined de-essing + EQ using TDR Nova dynamic EQ plugin.
+
+        Replaces separate de_esser() + equalize() stages with a single
+        high-quality plugin pass. TDR Nova provides:
+        - 4 parametric bands with per-band dynamics (compressor/expander)
+        - HP/LP filters
+        - Wide-band dynamics section
+
+        Args:
+            audio: Input audio (float32, 48kHz)
+            sr: Sample rate
+            de_ess_intensity: De-essing strength (0.0-1.0)
+            eq_intensity: EQ processing strength (0.0-1.0)
+
+        Returns:
+            (processed_audio, diagnostics_dict)
+        """
+        from utilities.tdr_nova_config import build_tts_preset, apply_preset
+
+        plugin = self.tdr_nova_plugin
+        if plugin is None:
+            return audio.copy(), {}
+
+        # Build and apply parameter preset
+        params = build_tts_preset(
+            de_ess_intensity=de_ess_intensity,
+            eq_intensity=eq_intensity,
+        )
+        errors = apply_preset(plugin, params)
+        if errors:
+            logger.warning(f"TDR Nova preset had {len(errors)} errors, some bands may not apply")
+
+        # Process audio through plugin
+        try:
+            processed = plugin(audio, sr)
+        except Exception as e:
+            logger.warning(f"TDR Nova processing failed: {e}. Returning original audio.")
+            return audio.copy(), {'error': str(e)}
+
+        # NaN safety check — VST3 plugins can produce NaN on edge cases
+        if np.any(np.isnan(processed)) or np.any(np.isinf(processed)):
+            logger.warning("TDR Nova produced NaN/Inf output. Returning original audio.")
+            return audio.copy(), {'error': 'NaN/Inf in output'}
+
+        diagnostics = {}
+        if self.return_diagnostics:
+            diagnostics['backend'] = 'tdr_nova'
+            diagnostics['de_ess_intensity'] = de_ess_intensity
+            diagnostics['eq_intensity'] = eq_intensity
+            if errors:
+                diagnostics['preset_errors'] = list(errors.keys())
+
+        return processed.astype(np.float32), diagnostics
 
     def de_esser(
         self,
@@ -131,14 +222,11 @@ class AudioPostProcessor:
         Returns:
             (processed_audio, diagnostics_dict)
         """
-        # Bypass if intensity is zero, regardless of available backends
+        # Bypass if intensity is zero
         if intensity <= 0.0:
             return audio.copy(), {}
 
-        # Use pedalboard if available, otherwise native scipy
-        if HAS_PEDALBOARD:
-            return self._de_esser_pedalboard(audio, sr, intensity)
-
+        # Always use native scipy — pedalboard has no built-in DeEsser
         return self._de_esser_native(audio, sr, intensity)
 
     def _de_esser_native(
@@ -184,26 +272,6 @@ class AudioPostProcessor:
         diagnostics = {}
         if self.return_diagnostics:
             diagnostics['reduction_db_curve'] = 20 * np.log10(gain_reduction + 1e-10)
-
-        return processed.astype(np.float32), diagnostics
-
-    def _de_esser_pedalboard(
-        self,
-        audio: np.ndarray,
-        sr: int,
-        intensity: float,
-    ) -> tuple[np.ndarray, dict]:
-        """Pedalboard implementation of de-essing."""
-        # Map intensity (0-1) to pedalboard parameters
-        # pedalboard.DeEsser uses frequency (Hz) and threshold (dB)
-        de_esser = pedalboard.DeEsser()
-
-        processed = de_esser(audio, sr)
-
-        diagnostics = {}
-        if self.return_diagnostics:
-            # Pedalboard doesn't expose gain curve, use placeholder
-            diagnostics['reduction_db_curve'] = np.zeros(len(audio) // 100)  # Downsampled
 
         return processed.astype(np.float32), diagnostics
 
@@ -815,15 +883,22 @@ class AudioPostProcessor:
         # Initialize diagnostics
         all_diagnostics = {}
 
-        # Stage 1: De-esser
-        audio, de_ess_diagnostics = self.de_esser(audio, sr, intensity=de_ess_intensity)
-        if de_ess_diagnostics:
-            all_diagnostics['de_esser'] = de_ess_diagnostics
+        # Stage 1+2: De-esser + EQ (combined via TDR Nova if available)
+        if HAS_TDR_NOVA and self.tdr_nova_plugin is not None:
+            audio, nova_diag = self._process_tdr_nova(
+                audio, sr, de_ess_intensity, eq_intensity
+            )
+            if nova_diag:
+                all_diagnostics['tdr_nova'] = nova_diag
+        else:
+            # Fallback: separate de-esser + EQ stages
+            audio, de_ess_diagnostics = self.de_esser(audio, sr, intensity=de_ess_intensity)
+            if de_ess_diagnostics:
+                all_diagnostics['de_esser'] = de_ess_diagnostics
 
-        # Stage 2: EQ
-        audio, eq_diagnostics = self.equalize(audio, sr, intensity=eq_intensity)
-        if eq_diagnostics:
-            all_diagnostics['equalize'] = eq_diagnostics
+            audio, eq_diagnostics = self.equalize(audio, sr, intensity=eq_intensity)
+            if eq_diagnostics:
+                all_diagnostics['equalize'] = eq_diagnostics
 
         # Stage 3: Compressor (advanced with soft-knee, adaptive threshold, look-ahead, makeup gain)
         audio, compressor_diagnostics = self.compress(

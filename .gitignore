@@ -199,3 +199,6 @@ models/
 cache/
 output_tmp/
 speakers/
+
+# repowise API keys (local)
+.repowise/.env

@@ -51,6 +51,10 @@ PING_TEXT = "ping"
 # Model storage
 MODELS_DIR = Path("models")
 
+# TDR Nova VST3 plugin configuration
+TDR_NOVA_VST3_PATH = Path(r"F:\Software\TDR Nova (no installer)\VST3\x64\TDR Nova.vst3")
+TDR_NOVA_ENABLED = True  # Set False to use pedalboard/scipy fallback
+
 # Create directories on import
 EMBEDS_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
