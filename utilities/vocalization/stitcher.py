@@ -61,9 +61,9 @@ def _crossfade_append(audio1: np.ndarray, audio2: np.ndarray, crossfade_samples:
     # Limit crossfade to shorter segment
     crossfade_samples = min(crossfade_samples, len(audio1), len(audio2))
 
-    # Create crossfade curves (equal power)
-    fade_out = np.linspace(1, 0, crossfade_samples)
-    fade_in = np.linspace(0, 1, crossfade_samples)
+    # Create equal-power crossfade curves (cosine/sine)
+    fade_out = np.cos(np.linspace(0, np.pi / 2, crossfade_samples)) ** 2
+    fade_in = np.sin(np.linspace(0, np.pi / 2, crossfade_samples)) ** 2
 
     # Apply crossfade
     result = audio1.copy()

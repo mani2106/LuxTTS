@@ -419,6 +419,50 @@ def test_vocalization_generator_is_modify_speech(mock_model):
     assert not generator.is_modify_speech("sighs")
 
 
+def test_dsp_time_stretch(sample_48k_audio):
+    """Time stretch changes duration without changing pitch."""
+    audio, sr = sample_48k_audio
+    from utilities.vocalization.dsp_engine import DSPEngine
+    engine = DSPEngine()
+    original_len = len(audio)
+    result = engine.apply_effect(audio, sr, {"type": "time_stretch", "factor": 0.8})
+    assert len(result) != original_len
+    assert isinstance(result, np.ndarray)
+
+
+def test_dsp_speed_up(sample_48k_audio):
+    """Speed up shortens audio."""
+    audio, sr = sample_48k_audio
+    from utilities.vocalization.dsp_engine import DSPEngine
+    engine = DSPEngine()
+    original_len = len(audio)
+    result = engine.apply_effect(audio, sr, {"type": "speed_up", "factor": 1.5})
+    assert len(result) < original_len
+    assert isinstance(result, np.ndarray)
+
+
+def test_dsp_high_shelf_boost(sample_48k_audio):
+    """High shelf boost adds high frequency energy."""
+    audio, sr = sample_48k_audio
+    from utilities.vocalization.dsp_engine import DSPEngine
+    engine = DSPEngine()
+    result = engine.apply_effect(audio, sr, {"type": "high_shelf_boost", "frequency_hz": 4000, "gain_db": 6})
+    assert len(result) == len(audio)
+    # Result should differ from input
+    assert not np.allclose(result, audio)
+
+
+def test_dsp_compress(sample_48k_audio):
+    """Compressor reduces dynamic range."""
+    audio, sr = sample_48k_audio
+    from utilities.vocalization.dsp_engine import DSPEngine
+    engine = DSPEngine()
+    result = engine.apply_effect(audio, sr, {"type": "compress", "threshold_db": -10, "ratio": 4})
+    assert len(result) == len(audio)
+    # Peak should be reduced compared to input
+    assert np.max(np.abs(result)) <= np.max(np.abs(audio))
+
+
 # Integration Tests - test component integration without full async pipeline
 def test_integration_tag_parser_and_generator(mock_model, encode_dict):
     """Tag parser and vocalization generator work together."""

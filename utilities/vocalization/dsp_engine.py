@@ -125,7 +125,11 @@ class DSPEngine:
     def _breath_noise(self, audio: np.ndarray, sr: int, effect: Dict[str, Any]) -> np.ndarray:
         """Add pink/filtered noise layer for breath sounds."""
         amplitude = effect.get("amplitude", 0.1)
-        noise = np.random.randn(len(audio)).astype(np.float32) * amplitude
+        # Seed numpy RNG from audio content hash for reproducibility
+        # This ensures same input + same torch seed = same output
+        seed_val = int(np.abs(np.sum(audio[:min(1024, len(audio))])) * 1e6) % (2**31)
+        rng = np.random.RandomState(seed_val)
+        noise = rng.randn(len(audio)).astype(np.float32) * amplitude
         # Low-pass filter noise for breathy character
         nyquist = sr / 2
         cutoff = 2000 / nyquist
@@ -187,7 +191,7 @@ class DSPEngine:
         return (audio * factor).astype(np.float32)
 
     def _speed_up(self, audio: np.ndarray, sr: int, effect: Dict[str, Any]) -> np.ndarray:
-        """Speed up with pitch preservation (time stretch < 1.0)."""
+        """Speed up with pitch preservation. factor > 1.0 = faster/shorter."""
         factor = effect.get("factor", 1.5)
-        # speed_up is inverse of time_stretch
-        return self._time_stretch(audio, sr, {"factor": 1.0 / factor})
+        # librosa time_stretch rate > 1.0 = shorter audio
+        return self._time_stretch(audio, sr, {"factor": factor})

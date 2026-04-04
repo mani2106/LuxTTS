@@ -150,6 +150,7 @@ async def generate_audio(
         cfg_scale=cfg_scale,
         seed=seed,
         randomize_seed=randomize_seed,
+        speed=speed,
         num_steps=num_steps,
         t_shift=t_shift,
         return_smooth=return_smooth,
@@ -273,6 +274,7 @@ async def _generate_with_vocalizations(
     cfg_scale: float,
     seed: int,
     randomize_seed: bool,
+    speed: float,
     num_steps: int,
     t_shift: float,
     return_smooth: bool,
@@ -309,11 +311,13 @@ async def _generate_with_vocalizations(
     encode_dict = await _get_speaker_encoding(speaker_audio, model, config)
 
     # Initialize vocalization generator
+    # Note: speed here is the default for vocalization TTS; individual recipes
+    # override via tts_speed. Speech segments use the caller's speed directly.
     voc_generator = VocalizationGenerator(
         model=model,
         num_steps=num_steps,
         guidance_scale=cfg_scale,
-        speed=1.0,
+        speed=speed,
         t_shift=t_shift,
         return_smooth=return_smooth,
     )
@@ -348,7 +352,7 @@ async def _generate_with_vocalizations(
                 encode_dict=encode_dict,
                 num_steps=num_steps,
                 guidance_scale=cfg_scale,
-                speed=1.0,
+                speed=speed,
                 t_shift=t_shift,
                 return_smooth=return_smooth,
             )
