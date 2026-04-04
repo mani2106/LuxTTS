@@ -271,3 +271,57 @@ def test_recipe_pause():
     recipe = get_recipe("pause")
     assert recipe.get("tts_text") is None
     assert "duration_s" in recipe
+
+
+# Stitcher Tests
+def test_stitch_single_segment(sample_48k_audio):
+    """Single segment returns unchanged."""
+    audio, sr = sample_48k_audio
+    from utilities.vocalization.stitcher import stitch_segments
+    segments = [(audio, sr)]
+    result, result_sr = stitch_segments(segments, crossfade_ms=50)
+    assert np.allclose(result, audio)
+    assert result_sr == sr
+
+
+def test_stitch_two_segments_with_crossfade(sample_48k_audio):
+    """Two segments are crossfaded."""
+    audio1, sr = sample_48k_audio
+    audio2 = np.roll(audio1, 1000)  # Different content
+    from utilities.vocalization.stitcher import stitch_segments
+    segments = [(audio1, sr), (audio2, sr)]
+    result, result_sr = stitch_segments(segments, crossfade_ms=100)
+    # Result should be shorter than sum (due to crossfade)
+    expected_length = len(audio1) + len(audio2) - int(0.1 * sr)
+    assert len(result) == expected_length
+    assert result_sr == sr
+
+
+def test_stitch_three_segments(sample_48k_audio):
+    """Three segments stitched sequentially."""
+    audio1, sr = sample_48k_audio
+    audio2 = audio1 * 0.8
+    audio3 = audio1 * 0.6
+    from utilities.vocalization.stitcher import stitch_segments
+    segments = [(audio1, sr), (audio2, sr), (audio3, sr)]
+    result, result_sr = stitch_segments(segments, crossfade_ms=50)
+    assert result_sr == sr
+    assert len(result) < len(audio1) + len(audio2) + len(audio3)
+
+
+def test_stitch_zero_crossfade(sample_48k_audio):
+    """Zero crossfade concatenates directly."""
+    audio1, sr = sample_48k_audio
+    audio2 = audio1 * 0.5
+    from utilities.vocalization.stitcher import stitch_segments
+    segments = [(audio1, sr), (audio2, sr)]
+    result, result_sr = stitch_segments(segments, crossfade_ms=0)
+    expected_length = len(audio1) + len(audio2)
+    assert len(result) == expected_length
+
+
+def test_stitch_empty_segments():
+    """Empty segment list returns empty audio."""
+    from utilities.vocalization.stitcher import stitch_segments
+    result, sr = stitch_segments([], crossfade_ms=50)
+    assert len(result) == 0
