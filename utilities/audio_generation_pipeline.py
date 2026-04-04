@@ -40,6 +40,10 @@ from utilities.cache_utils import get_audio_file_hash, get_cached_embedding, cac
 from utilities.audio_utils import save_wav_file, create_silence
 from utilities.app_config import AppConfig
 from utilities.post_processor import AudioPostProcessor
+from utilities.vocalization.tag_parser import parse_tags, has_vocalizations, Segment, SegmentType
+from utilities.vocalization.vocalization_generator import VocalizationGenerator
+from utilities.vocalization.stitcher import stitch_segments
+from utilities.vocalization.recipes import get_recipe
 
 
 logger = logging.getLogger(__name__)
@@ -108,6 +112,90 @@ async def generate_audio(
     if text == PING_TEXT:
         return _handle_ping()
 
+    # Check for vocalization tags
+    segments = parse_tags(text)
+
+    # Fast path: no vocalizations, use existing pipeline
+    if not has_vocalizations(segments):
+        return await _generate_normal_path(
+            text=text,
+            speaker_audio=speaker_audio,
+            cfg_scale=cfg_scale,
+            seed=seed,
+            randomize_seed=randomize_seed,
+            speed=speed,
+            num_steps=num_steps,
+            t_shift=t_shift,
+            return_smooth=return_smooth,
+            config=config,
+            enable_post_processing=enable_post_processing,
+            pitch_shift=pitch_shift,
+            eq_intensity=eq_intensity,
+            compressor_threshold_offset=compressor_threshold_offset,
+            compressor_ratio=compressor_ratio,
+            compressor_knee_db=compressor_knee_db,
+            compressor_attack_ms=compressor_attack_ms,
+            compressor_release_ms=compressor_release_ms,
+            max_gain_reduction_db=max_gain_reduction_db,
+            de_ess_intensity=de_ess_intensity,
+            target_loudness=target_loudness,
+            return_diagnostics=return_diagnostics,
+            save_raw=save_raw,
+        )
+
+    # Vocalization path: handle tags separately
+    return await _generate_with_vocalizations(
+        segments=segments,
+        speaker_audio=speaker_audio,
+        cfg_scale=cfg_scale,
+        seed=seed,
+        randomize_seed=randomize_seed,
+        num_steps=num_steps,
+        t_shift=t_shift,
+        return_smooth=return_smooth,
+        config=config,
+        enable_post_processing=enable_post_processing,
+        pitch_shift=pitch_shift,
+        eq_intensity=eq_intensity,
+        compressor_threshold_offset=compressor_threshold_offset,
+        compressor_ratio=compressor_ratio,
+        compressor_knee_db=compressor_knee_db,
+        compressor_attack_ms=compressor_attack_ms,
+        compressor_release_ms=compressor_release_ms,
+        max_gain_reduction_db=max_gain_reduction_db,
+        de_ess_intensity=de_ess_intensity,
+        target_loudness=target_loudness,
+        return_diagnostics=return_diagnostics,
+        save_raw=save_raw,
+    )
+
+
+async def _generate_normal_path(
+    text: str,
+    speaker_audio: Optional[str],
+    cfg_scale: float,
+    seed: int,
+    randomize_seed: bool,
+    speed: float,
+    num_steps: int,
+    t_shift: float,
+    return_smooth: bool,
+    config: AppConfig,
+    enable_post_processing: bool,
+    pitch_shift: Optional[float],
+    eq_intensity: float,
+    compressor_threshold_offset: float,
+    compressor_ratio: float,
+    compressor_knee_db: float,
+    compressor_attack_ms: float,
+    compressor_release_ms: float,
+    max_gain_reduction_db: float,
+    de_ess_intensity: float,
+    target_loudness: float,
+    return_diagnostics: bool,
+    save_raw: bool,
+) -> Tuple[str, int] | Tuple[str, int, str, dict]:
+    """Original generation path without vocalization tags."""
     # Ensure model is loaded
     model = load_model_if_needed(config)
 
@@ -172,6 +260,157 @@ async def generate_audio(
     save_wav_file(audio_array, output_path, sample_rate=SAMPLE_RATE)
 
     logger.info(f"Saved audio to {output_path}")
+
+    # Return based on what was requested
+    if save_raw or return_diagnostics:
+        return str(output_path), seed, str(raw_path) if raw_path else None, raw_diagnostics
+    return str(output_path), seed
+
+
+async def _generate_with_vocalizations(
+    segments: list,
+    speaker_audio: Optional[str],
+    cfg_scale: float,
+    seed: int,
+    randomize_seed: bool,
+    num_steps: int,
+    t_shift: float,
+    return_smooth: bool,
+    config: AppConfig,
+    enable_post_processing: bool,
+    pitch_shift: Optional[float],
+    eq_intensity: float,
+    compressor_threshold_offset: float,
+    compressor_ratio: float,
+    compressor_knee_db: float,
+    compressor_attack_ms: float,
+    compressor_release_ms: float,
+    max_gain_reduction_db: float,
+    de_ess_intensity: float,
+    target_loudness: float,
+    return_diagnostics: bool,
+    save_raw: bool,
+) -> Tuple[str, int] | Tuple[str, int, str, dict]:
+    """
+    Generate audio with vocalization tags.
+
+    Processes each segment (speech or vocalization) separately,
+    then stitches together with crossfades.
+    """
+    # Set seed
+    if randomize_seed:
+        seed = random.randint(0, 2**32 - 1)
+    torch.manual_seed(seed)
+
+    # Load model
+    model = load_model_if_needed(config)
+
+    # Get speaker encoding
+    encode_dict = await _get_speaker_encoding(speaker_audio, model, config)
+
+    # Initialize vocalization generator
+    voc_generator = VocalizationGenerator(
+        model=model,
+        num_steps=num_steps,
+        guidance_scale=cfg_scale,
+        speed=1.0,
+        t_shift=t_shift,
+        return_smooth=return_smooth,
+    )
+
+    # Process each segment
+    audio_segments = []
+    whisper_effects = None  # Store whisper effects for next speech segment
+
+    for segment in segments:
+        if segment.type == SegmentType.VOCALIZATION:
+            tag = segment.tag
+
+            # Check for whisper mode
+            if voc_generator.is_modify_speech(tag):
+                recipe = get_recipe(tag)
+                whisper_effects = recipe.get("effects", [])
+                logger.debug(f"Tag [{tag}] in modify-speech mode, will affect next speech")
+                continue
+
+            # Generate vocalization
+            audio, _ = voc_generator.generate(segment, encode_dict)
+            audio_segments.append((audio, SAMPLE_RATE))
+        else:
+            # Speech segment
+            speech_text = segment.text
+            if not speech_text.strip():
+                continue
+
+            # Generate speech
+            audio = model.generate_speech(
+                text=speech_text,
+                encode_dict=encode_dict,
+                num_steps=num_steps,
+                guidance_scale=cfg_scale,
+                speed=1.0,
+                t_shift=t_shift,
+                return_smooth=return_smooth,
+            )
+
+            # Convert to numpy
+            if hasattr(audio, 'numpy'):
+                audio = audio.numpy()
+            elif isinstance(audio, torch.Tensor):
+                audio = audio.cpu().numpy()
+            audio = audio.astype(np.float32).squeeze()
+
+            # Apply whisper effects if pending
+            if whisper_effects:
+                from utilities.vocalization.dsp_engine import DSPEngine
+                dsp = DSPEngine()
+                audio = dsp.apply_chain(audio, SAMPLE_RATE, whisper_effects)
+                whisper_effects = None
+
+            audio_segments.append((audio, SAMPLE_RATE))
+
+    # Stitch segments with crossfade
+    if not audio_segments:
+        # Fallback: create silence
+        audio_segments.append((create_silence(0.5, SAMPLE_RATE), SAMPLE_RATE))
+
+    stitched_audio, _ = stitch_segments(audio_segments, crossfade_ms=50)
+
+    # Save raw if requested
+    raw_path = None
+    raw_diagnostics = {}
+    if save_raw:
+        raw_timestamp = int(time.time() * 1000)
+        raw_path = OUTPUT_DIR / f"output_{raw_timestamp}_raw.wav"
+        save_wav_file(stitched_audio, raw_path, sample_rate=SAMPLE_RATE)
+
+    # Apply post-processing
+    if enable_post_processing:
+        processor = AudioPostProcessor(return_diagnostics=return_diagnostics)
+        # Use the full original text for pitch detection
+        full_text = "".join(s.text for s in segments if s.type == SegmentType.SPEECH)
+        stitched_audio, raw_diagnostics = processor.process(
+            stitched_audio,
+            sr=SAMPLE_RATE,
+            text=full_text,
+            pitch_shift=pitch_shift,
+            eq_intensity=eq_intensity,
+            de_ess_intensity=de_ess_intensity,
+            compressor_threshold_offset_db=compressor_threshold_offset,
+            compressor_ratio=compressor_ratio,
+            compressor_knee_db=compressor_knee_db,
+            compressor_attack_ms=compressor_attack_ms,
+            compressor_release_ms=compressor_release_ms,
+            max_gain_reduction_db=max_gain_reduction_db,
+            target_loudness=target_loudness,
+        )
+
+    # Save output
+    timestamp = int(time.time() * 1000)
+    output_path = OUTPUT_DIR / f"output_{timestamp}.wav"
+    save_wav_file(stitched_audio, output_path, sample_rate=SAMPLE_RATE)
+
+    logger.info(f"Saved audio with vocalizations to {output_path}")
 
     # Return based on what was requested
     if save_raw or return_diagnostics:

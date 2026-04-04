@@ -417,3 +417,87 @@ def test_vocalization_generator_is_modify_speech(mock_model):
     generator = VocalizationGenerator(mock_model)
     assert generator.is_modify_speech("whispers")
     assert not generator.is_modify_speech("sighs")
+
+
+# Integration Tests - test component integration without full async pipeline
+def test_integration_tag_parser_and_generator(mock_model, encode_dict):
+    """Tag parser and vocalization generator work together."""
+    from utilities.vocalization.vocalization_generator import VocalizationGenerator
+    from utilities.vocalization.tag_parser import parse_tags, SegmentType
+
+    text = "[sighs] Hello [gasps] world"
+    segments = parse_tags(text)
+
+    # Should parse into 4 segments
+    assert len(segments) == 4
+    assert segments[0].type == SegmentType.VOCALIZATION
+    assert segments[1].type == SegmentType.SPEECH
+    assert segments[2].type == SegmentType.VOCALIZATION
+    assert segments[3].type == SegmentType.SPEECH
+
+    # Generate audio for vocalization segments
+    generator = VocalizationGenerator(mock_model)
+    audio1, sr1 = generator.generate(segments[0], encode_dict)
+    audio2, sr2 = generator.generate(segments[2], encode_dict)
+
+    assert sr1 == 48000
+    assert sr2 == 48000
+    assert len(audio1) > 0
+    assert len(audio2) > 0
+
+
+def test_integration_stitch_with_generated_audio(mock_model, encode_dict):
+    """Stitcher works with generated audio."""
+    from utilities.vocalization.vocalization_generator import VocalizationGenerator
+    from utilities.vocalization.tag_parser import parse_tags, has_vocalizations
+    from utilities.vocalization.stitcher import stitch_segments
+    import numpy as np
+
+    text = "[sighs] Hello"
+    segments = parse_tags(text)
+
+    # Verify tags are detected
+    assert has_vocalizations(segments)
+
+    # Generate audio for each segment
+    generator = VocalizationGenerator(mock_model)
+    audio_segments = []
+
+    for seg in segments:
+        if seg.type == SegmentType.VOCALIZATION:
+            audio, sr = generator.generate(seg, encode_dict)
+            audio_segments.append((audio, sr))
+        else:
+            # Mock speech segment
+            speech_audio = np.random.randn(24000).astype(np.float32) * 0.1
+            audio_segments.append((speech_audio, 48000))
+
+    # Stitch together
+    result, sr = stitch_segments(audio_segments, crossfade_ms=50)
+    assert sr == 48000
+    assert len(result) > 0
+    # Result should be shorter than sum due to crossfade
+    assert len(result) < sum(len(a) for a, _ in audio_segments)
+
+
+def test_integration_whisper_mode_detection():
+    """Whisper mode is properly detected and affects speech."""
+    from utilities.vocalization.tag_parser import parse_tags
+    from utilities.vocalization.vocalization_generator import VocalizationGenerator
+    from utilities.vocalization.recipes import get_recipe
+
+    # Parse whisper tag
+    segments = parse_tags("[whispers] quiet speech")
+    assert segments[0].tag == "whispers"
+    assert segments[1].text == "quiet speech"
+
+    # Check generator detects whisper mode
+    mock_model = Mock()
+    generator = VocalizationGenerator(mock_model)
+    assert generator.is_modify_speech("whispers")
+
+    # Verify whisper recipe has modify_speech mode
+    recipe = get_recipe("whispers")
+    assert recipe["mode"] == "modify_speech"
+    assert recipe["tts_text"] is None
+    assert len(recipe["effects"]) > 0
