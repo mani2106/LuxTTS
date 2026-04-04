@@ -5,7 +5,7 @@
     "max_duration_s": 1.5,
     "effects": [
       {"type": "pitch_shift", "semitones": -3},
-      {"type": "low_pass_filter", "cutoff_hz": 800},
+      {"type": "low_pass_filter", "cutoff_hz": 1500},
       {"type": "breath_noise", "amplitude": 0.08},
       {"type": "fade_out", "duration_s": 0.5}
     ]
@@ -15,7 +15,7 @@
     "tts_speed": 0.7,
     "max_duration_s": 2.0,
     "effects": [
-      {"type": "pitch_shift", "semitones": -5},
+      {"type": "pitch_shift", "semitones": -3},
       {"type": "low_pass_filter", "cutoff_hz": 600},
       {"type": "breath_noise", "amplitude": 0.06},
       {"type": "volume", "factor": 1.2}
@@ -48,7 +48,7 @@
     "max_duration_s": 2.0,
     "effects": [
       {"type": "pitch_shift", "semitones": 5},
-      {"type": "distortion", "intensity": 0.6},
+      {"type": "distortion", "intensity": 0.2},
       {"type": "high_shelf_boost", "frequency_hz": 4000, "gain_db": 6},
       {"type": "compress", "threshold_db": -10, "ratio": 4},
       {"type": "volume", "factor": 1.5}
@@ -112,7 +112,7 @@
     "max_duration_s": 1.5,
     "effects": [
       {"type": "pitch_shift", "semitones": 1},
-      {"type": "high_pass_filter", "cutoff_hz": 1500},
+      {"type": "high_pass_filter", "cutoff_hz": 500},
       {"type": "volume", "factor": 1.1}
     ]
   },
