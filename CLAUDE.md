@@ -41,6 +41,13 @@ For training: `uv pip install -e ".[train]"` (adds `einops`).
   - `audio_utils.py` — Audio I/O (WAV load/save, silence generation)
   - `cache_utils.py` — Two-tier caching (memory + disk) for speaker embeddings
   - `audio_generation_pipeline.py` — Orchestration: encode → generate → vocode → save
+  - `vocalization/` — Vocalization audio tag processing:
+    - `tag_parser.py` — Parse ElevenLabs-style `[bracket]` audio tags from text
+    - `dsp_engine.py` — Audio DSP effects (pitch shift, filters, distortion, breath noise, etc.)
+    - `recipes.py` — Load tag → DSP recipe mappings from JSON config
+    - `vocalization_generator.py` — Orchestrate TTS + DSP for vocalization segments
+    - `stitcher.py` — Crossfade audio segments together
+    - `recipes.json` — DSP recipe definitions for 14 supported tags
 - **`speakers/en/`** — Bundled preset voice samples for Skyrim characters
 
 ### User-Facing API
@@ -77,3 +84,56 @@ Ruff is configured with `line-length = 120`.
 - The Vocos vocoder has weight parametrizations that must be removed before `load_state_dict` (see `load_models_gpu`/`load_models_cpu`).
 - Output audio is always 48kHz. `return_smooth=True` disables 48k upsampling for a different quality tradeoff.
 - **Server test suite**: The SkyrimNet-LuxTTS server has tests in `tests/` — run with `pytest tests/ -v`.
+
+## Vocalization Audio Tags
+
+The server supports ElevenLabs-style `[bracket]` audio tags for non-speech vocalizations embedded within dialogue text.
+
+### Supported Tags
+
+**Human Reactions:** sighs, groans, moans
+**Emotional:** gasps, screams, shouts, laughs, sobs, whimpers
+**Breath/Air:** breathes heavily, clears throat, coughs
+**Delivery:** whispers (modifies next speech segment), pause
+
+### Usage Examples
+
+```
+[sighs] I can't believe we made it.
+Stop! [gasps] How did you find me?
+[whispers] Don't make a sound.
+[screams] Get away from me!
+[breathes heavily] We need to keep moving.
+Hello [pause] my friend.
+```
+
+### Implementation
+
+**Location:** `utilities/vocalization/` package
+
+**Pipeline:**
+1. `tag_parser.py` — Parse text into speech/vocalization segments using regex
+2. `vocalization_generator.py` — For each segment:
+   - Vocalization: TTS with recipe's `tts_text` → apply DSP effects
+   - Speech: Normal TTS generation
+   - Whisper mode: Apply DSP effects to following speech
+3. `stitcher.py` — Crossfade stitch all segments together
+4. Post-processing: Apply existing compression, EQ, normalization
+
+**DSP Effects** (`dsp_engine.py`):
+- pitch_shift, time_stretch, speed_up
+- low_pass_filter, high_pass_filter, high_shelf_boost
+- breath_noise, distortion, compress
+- fade_in, fade_out, volume
+
+**Recipes** (`recipes.json`): JSON config mapping tags to TTS text and DSP effect chains. No YAML dependency.
+
+### Performance
+
+- **Zero overhead** when no tags present (single regex scan)
+- **With tags**: ~100-300ms extra DSP per vocalization segment
+- All DSP uses numpy/scipy — no GPU required
+
+### Future Extension
+
+The `VocalizationGenerator` class is an abstraction boundary. Can be replaced with neural vocalization models (NVSpeech, CosyVoice fine-tune) without changing parser/stitcher/integration.
