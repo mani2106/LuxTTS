@@ -40,7 +40,7 @@ For training: `uv pip install -e ".[train]"` (adds `einops`).
   - `model_utils.py` — Model singleton loading with HuggingFace downloads
   - `audio_utils.py` — Audio I/O (WAV load/save, silence generation)
   - `cache_utils.py` — Two-tier caching (memory + disk) for speaker embeddings
-  - `audio_generation_pipeline.py` — Orchestration: encode → generate → vocode → save
+  - `audio_generation_pipeline.py` — Orchestration: encode → generate → vocode → save. Routes through vocalization pipeline when `[bracket]` tags detected, otherwise uses normal TTS path.
   - `vocalization/` — Vocalization audio tag processing:
     - `tag_parser.py` — Parse ElevenLabs-style `[bracket]` audio tags from text
     - `dsp_engine.py` — Audio DSP effects (pitch shift, filters, distortion, breath noise, etc.)
