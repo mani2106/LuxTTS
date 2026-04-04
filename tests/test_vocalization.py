@@ -325,3 +325,95 @@ def test_stitch_empty_segments():
     from utilities.vocalization.stitcher import stitch_segments
     result, sr = stitch_segments([], crossfade_ms=50)
     assert len(result) == 0
+
+
+# Vocalization Generator Tests
+@pytest.fixture
+def mock_model():
+    """Mock LuxTTS model."""
+    model = Mock()
+    # Mock generate_speech to return simple audio
+    dummy_audio = torch.randn(48000).numpy()  # 1 second of 48kHz
+    model.generate_speech = MagicMock(return_value=torch.from_numpy(dummy_audio))
+    return model
+
+
+@pytest.fixture
+def encode_dict():
+    """Mock speaker encoding dict."""
+    return {"speaker_embed": torch.randn(128)}
+
+
+def test_vocalization_generator_sighs(mock_model, encode_dict):
+    """Generate sighs vocalization."""
+    from utilities.vocalization.vocalization_generator import VocalizationGenerator
+    from utilities.vocalization.tag_parser import Segment, SegmentType
+    segment = Segment(type=SegmentType.VOCALIZATION, tag="sighs")
+    generator = VocalizationGenerator(mock_model)
+    audio, sr = generator.generate(segment, encode_dict)
+    assert len(audio) > 0
+    assert sr == 48000
+
+
+def test_vocalization_generator_pause(mock_model, encode_dict):
+    """Pause tag returns silence without TTS."""
+    from utilities.vocalization.vocalization_generator import VocalizationGenerator
+    from utilities.vocalization.tag_parser import Segment, SegmentType
+    segment = Segment(type=SegmentType.VOCALIZATION, tag="pause")
+    generator = VocalizationGenerator(mock_model)
+    audio, sr = generator.generate(segment, encode_dict)
+    assert len(audio) == int(0.3 * 48000)  # 0.3s pause
+    assert sr == 48000
+    # Silence should be all zeros
+    assert np.allclose(audio, 0)
+
+
+def test_vocalization_generator_unknown_tag(mock_model, encode_dict):
+    """Unknown tag returns 0.3s silence with warning."""
+    from utilities.vocalization.vocalization_generator import VocalizationGenerator
+    from utilities.vocalization.tag_parser import Segment, SegmentType
+    segment = Segment(type=SegmentType.VOCALIZATION, tag="unknown_tag")
+    generator = VocalizationGenerator(mock_model)
+    audio, sr = generator.generate(segment, encode_dict)
+    assert len(audio) == int(0.3 * 48000)
+
+
+def test_vocalization_generator_with_max_duration(mock_model, encode_dict):
+    """Max duration truncates long TTS output."""
+    from utilities.vocalization.vocalization_generator import VocalizationGenerator
+    from utilities.vocalization.tag_parser import Segment, SegmentType
+    # Return 2 seconds of audio
+    long_audio = torch.randn(96000).numpy()
+    mock_model.generate_speech = MagicMock(return_value=torch.from_numpy(long_audio))
+
+    segment = Segment(type=SegmentType.VOCALIZATION, tag="gasps")  # max_duration_s: 0.4
+    generator = VocalizationGenerator(mock_model)
+    audio, sr = generator.generate(segment, encode_dict)
+    assert len(audio) <= int(0.5 * 48000)  # ~0.4s + tolerance
+
+
+def test_vocalization_generator_custom_params(mock_model, encode_dict):
+    """Custom TTS params are passed through."""
+    from utilities.vocalization.vocalization_generator import VocalizationGenerator
+    from utilities.vocalization.tag_parser import Segment, SegmentType
+    segment = Segment(type=SegmentType.VOCALIZATION, tag="sighs")
+    generator = VocalizationGenerator(
+        mock_model,
+        num_steps=4,
+        guidance_scale=2.5,
+        speed=0.7,
+        t_shift=0.8,
+    )
+    audio, sr = generator.generate(segment, encode_dict)
+    # Verify generate_speech was called with custom params
+    call_args = mock_model.generate_speech.call_args
+    assert call_args.kwargs['num_steps'] == 4
+    assert call_args.kwargs['guidance_scale'] == 2.5
+
+
+def test_vocalization_generator_is_modify_speech(mock_model):
+    """is_modify_speech() identifies whisper mode."""
+    from utilities.vocalization.vocalization_generator import VocalizationGenerator
+    generator = VocalizationGenerator(mock_model)
+    assert generator.is_modify_speech("whispers")
+    assert not generator.is_modify_speech("sighs")
