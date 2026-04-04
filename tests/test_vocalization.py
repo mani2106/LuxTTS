@@ -215,3 +215,59 @@ def test_dsp_unknown_effect_type(sample_48k_audio):
     engine = DSPEngine()
     with pytest.raises(ValueError, match="Unknown effect type"):
         engine.apply_effect(audio, sr, {"type": "unknown_effect"})
+
+
+# Recipe Loader Tests
+def test_load_recipes():
+    """Load all recipes from JSON."""
+    from utilities.vocalization.recipes import load_recipes
+    recipes = load_recipes()
+    assert "sighs" in recipes
+    assert "screams" in recipes
+    assert "pause" in recipes
+
+
+def test_get_recipe_existing():
+    """Get recipe for existing tag."""
+    from utilities.vocalization.recipes import get_recipe
+    recipe = get_recipe("sighs")
+    assert recipe["tts_text"] == "haaah"
+    assert "effects" in recipe
+    assert len(recipe["effects"]) > 0
+
+
+def test_get_recipe_unknown():
+    """Get recipe for unknown tag returns None."""
+    from utilities.vocalization.recipes import get_recipe
+    recipe = get_recipe("unknown_tag_xyz")
+    assert recipe is None
+
+
+def test_recipe_sighs_structure():
+    """Sighs recipe has expected structure."""
+    from utilities.vocalization.recipes import get_recipe
+    recipe = get_recipe("sighs")
+    assert "tts_text" in recipe
+    assert "effects" in recipe
+    assert recipe["tts_text"] == "haaah"
+
+    # Check effects
+    effects = recipe["effects"]
+    assert any(e["type"] == "pitch_shift" for e in effects)
+    assert any(e["type"] == "breath_noise" for e in effects)
+
+
+def test_recipe_whisper_mode():
+    """Whispers recipe has modify_speech mode."""
+    from utilities.vocalization.recipes import get_recipe
+    recipe = get_recipe("whispers")
+    assert recipe.get("mode") == "modify_speech"
+    assert recipe.get("tts_text") is None
+
+
+def test_recipe_pause():
+    """Pause recipe has duration but no tts_text."""
+    from utilities.vocalization.recipes import get_recipe
+    recipe = get_recipe("pause")
+    assert recipe.get("tts_text") is None
+    assert "duration_s" in recipe
