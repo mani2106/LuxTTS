@@ -63,12 +63,12 @@ def process_audio(audio, transcriber, tokenizer, feature_extractor, device, targ
 
 def generate(prompt_tokens, prompt_features_lens, prompt_features, prompt_rms, text, model, vocoder, tokenizer, num_step=4, guidance_scale=3.0, speed=1.0, t_shift=0.5, target_rms=0.1):
     tokens = tokenizer.texts_to_token_ids([text])
-    device = next(model.parameters()).device  # Auto-detect device
+    device = next(model.parameters()).device
 
     speed = speed * 1.3
 
     with torch.inference_mode():
-        (pred_features, _, _, _) = model.sample(
+        (pred_features, _, _, pred_lens) = model.sample(
             tokens=tokens,
             prompt_tokens=prompt_tokens,
             prompt_features=prompt_features,
@@ -83,12 +83,13 @@ def generate(prompt_tokens, prompt_features_lens, prompt_features, prompt_rms, t
     # Convert to waveform
     pred_features = pred_features.permute(0, 2, 1) / 0.1
 
-    # FIX: Padding for the Vocoder
-    # We take the last frame and repeat it 15 times (approx 150ms buffer)
-    # This gives Vocos enough data to finish the previous sound without cutting it.
-    last_frame = pred_features[:, :, -1:]
-    padding_frames = last_frame.repeat(1, 1, 15)
-    pred_features = torch.cat([pred_features, padding_frames], dim=2)
+    # Trim to actual predicted length + small decay tail for natural ending
+    actual_len = pred_lens[0].item()
+    actual_len = min(actual_len, pred_features.size(2))
+    last_frame = pred_features[:, :, actual_len - 1:actual_len]
+    decay = torch.linspace(1.0, 0.0, 5).to(pred_features.device).view(1, 1, -1)
+    tail = last_frame * decay
+    pred_features = torch.cat([pred_features[:, :, :actual_len], tail], dim=2)
 
     wav = vocoder.decode(pred_features).squeeze(1).clamp(-1, 1)
 
