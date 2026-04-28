@@ -47,6 +47,16 @@ class LuxTTSConfig:
 def process_audio(audio, transcriber, tokenizer, feature_extractor, device, target_rms=0.1, duration=4, feat_scale=0.1):
     prompt_wav, sr = librosa.load(audio, sr=24000, duration=duration)
     prompt_wav2, sr = librosa.load(audio, sr=16000, duration=duration)
+
+    # Trim silence from prompt edges to prevent prompt leaking into generation
+    prompt_wav, _ = librosa.effects.trim(prompt_wav, top_db=30)
+    prompt_wav2, _ = librosa.effects.trim(prompt_wav2, top_db=30)
+
+    # Add 200ms trailing silence to seal prompt boundary
+    trail_samples = int(0.2 * sr)
+    prompt_wav = np.append(prompt_wav, np.zeros(trail_samples, dtype=np.float32))
+    prompt_wav2 = np.append(prompt_wav2, np.zeros(int(0.2 * 16000), dtype=np.float32))
+
     prompt_text = transcriber(prompt_wav2)["text"]
     print(prompt_text)
 
