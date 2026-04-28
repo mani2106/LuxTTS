@@ -519,6 +519,27 @@ def test_process_with_all_caps_text(sample_48k_audio):
         assert diagnostics['pitch_shift']['detected_semitones'] == 2.0
 
 
+def test_process_full_chain_includes_expressiveness(sample_48k_audio):
+    """Full chain should include prosodic_modulation, room_presence, spectral_enrich."""
+    audio, sr = sample_48k_audio
+    processor = AudioPostProcessor(return_diagnostics=True)
+
+    processed, diagnostics = processor.process(
+        audio, sr,
+        text="Hello world",
+        eq_intensity=1.0,
+        de_ess_intensity=0.5,
+        target_loudness=-16.0,
+    )
+
+    assert processed is not None
+    assert len(processed) > 0
+    assert not np.any(np.isnan(processed))
+    assert 'prosodic_modulation' in diagnostics
+    assert 'room_presence' in diagnostics
+    assert 'spectral_enrich' in diagnostics
+
+
 def test_prosodic_modulation_changes_audio(sample_48k_audio):
     """Prosodic modulation should subtly vary amplitude."""
     audio, sr = sample_48k_audio

@@ -889,7 +889,10 @@ class AudioPostProcessor:
         2. EQ (tame harshness, add warmth)
         3. Compressor (soft-knee, adaptive threshold, look-ahead, makeup gain)
         4. Pitch shift (adjust pitch)
-        5. Normalize loudness (EBU R128)
+        5. Prosodic modulation (micro amplitude variation)
+        6. Room presence (subtle early reflections)
+        7. Spectral enrichment (harmonic exciter)
+        8. Normalize loudness (EBU R128)
 
         Args:
             audio: Input audio (float32, typically 48kHz)
@@ -912,10 +915,13 @@ class AudioPostProcessor:
             - processed_audio: The final processed audio
             - diagnostics_dict: Nested dict with per-stage diagnostics
                 {
-                    'de_esser': {...},
-                    'equalize': {...},
+                    'de_esser': {...},  # or 'tdr_nova' if using TDR Nova
+                    'equalize': {...},  # not present if using TDR Nova
                     'compressor': {...},
                     'pitch_shift': {...},
+                    'prosodic_modulation': {...},
+                    'room_presence': {...},
+                    'spectral_enrich': {...},
                     'normalize_loudness': {...}
                 }
         """
@@ -973,7 +979,22 @@ class AudioPostProcessor:
         else:
             all_diagnostics['pitch_shift']['detected_semitones'] = detected_pitch
 
-        # Stage 5: Normalize loudness
+        # Stage 5: Prosodic micro-modulation
+        audio, prosodic_diagnostics = self.prosodic_modulation(audio, sr, text=text or "")
+        if prosodic_diagnostics:
+            all_diagnostics['prosodic_modulation'] = prosodic_diagnostics
+
+        # Stage 6: Room presence
+        audio, room_diagnostics = self.room_presence(audio, sr)
+        if room_diagnostics:
+            all_diagnostics['room_presence'] = room_diagnostics
+
+        # Stage 7: Spectral enrichment
+        audio, enrich_diagnostics = self.spectral_enrich(audio, sr)
+        if enrich_diagnostics:
+            all_diagnostics['spectral_enrich'] = enrich_diagnostics
+
+        # Stage 8: Normalize loudness
         audio, loudness_diagnostics = self.normalize_loudness(audio, sr, target_lufs=target_loudness)
         if loudness_diagnostics:
             all_diagnostics['normalize_loudness'] = loudness_diagnostics
