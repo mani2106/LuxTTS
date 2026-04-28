@@ -17,8 +17,10 @@ if (-not (Test-Path $ActivateScript)) {
 
 # Launch API with high priority, passing through all script args
 $PythonExe = Join-Path $ProjectRoot ".venv\Scripts\python.exe"
-Start-Process -FilePath $PythonExe `
-              -ArgumentList "skyrimnet_api.py", $args `
-              -Priority "High" `
-              -NoNewWindow `
-              -WorkingDirectory $ProjectRoot
+$AllArgs = @("skyrimnet_api.py") + $args
+$proc = Start-Process -FilePath $PythonExe `
+                      -ArgumentList $AllArgs `
+                      -PassThru `
+                      -NoNewWindow `
+                      -WorkingDirectory $ProjectRoot
+$proc.PriorityClass = [System.Diagnostics.ProcessPriorityClass]::High
