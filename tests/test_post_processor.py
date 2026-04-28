@@ -519,6 +519,45 @@ def test_process_with_all_caps_text(sample_48k_audio):
         assert diagnostics['pitch_shift']['detected_semitones'] == 2.0
 
 
+def test_prosodic_modulation_changes_audio(sample_48k_audio):
+    """Prosodic modulation should subtly vary amplitude."""
+    audio, sr = sample_48k_audio
+    processor = AudioPostProcessor(return_diagnostics=True)
+
+    processed, diagnostics = processor.prosodic_modulation(audio, sr, text="This is exciting!")
+
+    assert processed is not None
+    assert len(processed) == len(audio)
+    assert processed.dtype == np.float32
+    assert not np.allclose(processed, audio, atol=1e-6)
+    assert 'emotion' in diagnostics
+
+
+def test_prosodic_modulation_calm_text_shallower(sample_48k_audio):
+    """Calm text should have shallower modulation than excited text."""
+    audio, sr = sample_48k_audio
+    processor = AudioPostProcessor()
+
+    calm_processed, _ = processor.prosodic_modulation(audio, sr, text="Hello world")
+    excited_processed, _ = processor.prosodic_modulation(audio, sr, text="This is exciting!")
+
+    calm_diff = np.sqrt(np.mean((calm_processed - audio) ** 2))
+    excited_diff = np.sqrt(np.mean((excited_processed - audio) ** 2))
+
+    assert excited_diff > calm_diff
+
+
+def test_prosodic_modulation_silence():
+    """Prosodic modulation on silence should remain silence."""
+    sr = 48000
+    silence = np.zeros(48000, dtype=np.float32)
+    processor = AudioPostProcessor()
+
+    processed, _ = processor.prosodic_modulation(silence, sr, text="Hello!")
+
+    np.testing.assert_allclose(processed, silence, atol=1e-7)
+
+
 # ---- TDR Nova integration tests ----
 
 
@@ -603,3 +642,81 @@ def test_tdr_nova_fallback_when_missing(sample_48k_audio):
         assert 'tdr_nova' not in diagnostics
     finally:
         pp.HAS_TDR_NOVA = original_has_tdr
+
+
+def test_room_presence_adds_reverb(sample_48k_audio):
+    """Room presence should add subtle reverb tail."""
+    audio, sr = sample_48k_audio
+    processor = AudioPostProcessor(return_diagnostics=True)
+
+    processed, diagnostics = processor.room_presence(audio, sr)
+
+    assert processed is not None
+    assert len(processed) == len(audio)
+    assert processed.dtype == np.float32
+    assert not np.allclose(processed, audio, atol=1e-6)
+    assert 'wet_level_db' in diagnostics
+    assert diagnostics['wet_level_db'] == -12.0
+
+
+def test_room_presence_silence():
+    """Room presence on silence should remain near-silence."""
+    sr = 48000
+    silence = np.zeros(48000, dtype=np.float32)
+    processor = AudioPostProcessor()
+
+    processed, _ = processor.room_presence(silence, sr)
+
+    assert np.max(np.abs(processed)) < 1e-6
+
+
+def test_room_presence_louder_wet_signal():
+    """Higher wet level should produce more noticeable reverb."""
+    sr = 48000
+    t = np.linspace(0, 0.5, int(sr * 0.5))
+    audio = (0.5 * np.sin(2 * np.pi * 440 * t)).astype(np.float32)
+
+    processor = AudioPostProcessor()
+
+    quiet, _ = processor.room_presence(audio, sr, wet_db=-20)
+    loud, _ = processor.room_presence(audio, sr, wet_db=-6)
+
+    quiet_diff = np.sqrt(np.mean((quiet - audio) ** 2))
+    loud_diff = np.sqrt(np.mean((loud - audio) ** 2))
+
+    assert loud_diff > quiet_diff
+
+
+def test_spectral_enrich_adds_harmonics(sample_48k_audio):
+    """Spectral enrichment should modify audio by adding upper harmonics."""
+    audio, sr = sample_48k_audio
+    processor = AudioPostProcessor(return_diagnostics=True)
+
+    processed, diagnostics = processor.spectral_enrich(audio, sr)
+
+    assert processed is not None
+    assert len(processed) == len(audio)
+    assert processed.dtype == np.float32
+    assert not np.allclose(processed, audio, atol=1e-6)
+    assert 'intensity' in diagnostics
+
+
+def test_spectral_enrich_zero_intensity_bypass(sample_48k_audio):
+    """Zero intensity should bypass spectral enrichment."""
+    audio, sr = sample_48k_audio
+    processor = AudioPostProcessor()
+
+    processed, _ = processor.spectral_enrich(audio, sr, intensity=0.0)
+
+    np.testing.assert_allclose(processed, audio, atol=1e-6)
+
+
+def test_spectral_enrich_silence():
+    """Spectral enrichment on silence should remain silence."""
+    sr = 48000
+    silence = np.zeros(48000, dtype=np.float32)
+    processor = AudioPostProcessor()
+
+    processed, _ = processor.spectral_enrich(silence, sr)
+
+    np.testing.assert_allclose(processed, silence, atol=1e-7)

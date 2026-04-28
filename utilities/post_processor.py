@@ -931,8 +931,44 @@ class AudioPostProcessor:
             all_diagnostics['pitch_shift']['detected_semitones'] = detected_pitch
 
         # Stage 5: Normalize loudness
-        audio, loudness_diagnostics = self.normalize_loudness(audio, sr, target_lufs=target_loudness)
+        audio, loudness_diagnostics = self.normalize_loudness(audio, sr, target_loudness=target_loudness)
         if loudness_diagnostics:
             all_diagnostics['normalize_loudness'] = loudness_diagnostics
 
         return audio.astype(np.float32), all_diagnostics
+
+    def room_presence(
+        self,
+        audio: np.ndarray,
+        sr: int,
+        room_size: str = "small",
+        wet_db: float = -12.0,
+    ) -> tuple[np.ndarray, dict]:
+        """
+        Add subtle room presence via synthetic early reflections.
+
+        Generates a bandpass-filtered exponentially-decaying impulse response
+        and convolves it with the audio at a low wet level.
+        """
+        rt60 = 0.08 if room_size == "small" else 0.15
+        ir_length = int(rt60 * sr)
+
+        rng = np.random.RandomState(42)
+        ir = rng.randn(ir_length).astype(np.float32)
+
+        ir *= np.exp(-np.linspace(0, 6, ir_length)).astype(np.float32)
+
+        b, a = signal.butter(2, [200 / (sr / 2), 8000 / (sr / 2)], btype='band')
+        ir = signal.filtfilt(b, a, ir).astype(np.float32)
+        ir /= np.max(np.abs(ir)) + 1e-10
+
+        reverb = np.convolve(audio, ir, mode='full')[:len(audio)].astype(np.float32)
+        wet_gain = 10 ** (wet_db / 20)
+        processed = audio + reverb * wet_gain
+
+        diagnostics = {}
+        if self.return_diagnostics:
+            diagnostics['wet_level_db'] = wet_db
+            diagnostics['rt60_ms'] = rt60 * 1000
+
+        return processed.astype(np.float32), diagnostics
