@@ -20,7 +20,7 @@ from zipvoice.tokenizer.tokenizer import EmiliaTokenizer
 from zipvoice.utils.checkpoint import load_checkpoint
 from zipvoice.utils.common import AttributeDict, str2bool
 from zipvoice.utils.feature import VocosFbank
-from zipvoice.utils.infer import rms_norm
+from zipvoice.utils.infer import rms_norm, chunk_tokens_punctuation, cross_fade_concat
 
 from dataclasses import dataclass, field
 from typing import Optional, List
@@ -62,6 +62,14 @@ def process_audio(audio, transcriber, tokenizer, feature_extractor, device, targ
     return prompt_tokens, prompt_features_lens, prompt_features, prompt_rms
 
 def generate(prompt_tokens, prompt_features_lens, prompt_features, prompt_rms, text, model, vocoder, tokenizer, num_step=4, guidance_scale=3.0, speed=1.0, t_shift=0.5, target_rms=0.1):
+    CHUNK_CHAR_THRESHOLD = 120
+    if len(text) > CHUNK_CHAR_THRESHOLD:
+        return _generate_chunked(
+            prompt_tokens, prompt_features_lens, prompt_features, prompt_rms,
+            text, model, vocoder, tokenizer,
+            num_step, guidance_scale, speed, t_shift, target_rms,
+            chunk_char_threshold=CHUNK_CHAR_THRESHOLD,
+        )
     tokens = tokenizer.texts_to_token_ids([text])
     device = next(model.parameters()).device
 
@@ -98,6 +106,59 @@ def generate(prompt_tokens, prompt_features_lens, prompt_features, prompt_rms, t
         wav = wav * (prompt_rms / target_rms)
 
     return wav
+
+def _generate_chunked(prompt_tokens, prompt_features_lens, prompt_features, prompt_rms, text, model, vocoder, tokenizer, num_step=4, guidance_scale=3.0, speed=1.0, t_shift=0.5, target_rms=0.1, chunk_char_threshold=120):
+    """Generate speech for longer texts by chunking at punctuation boundaries."""
+    device = next(model.parameters()).device
+    speed_internal = speed * 1.3
+
+    # Tokenize to string tokens for chunking
+    tokens_str = tokenizer.texts_to_tokens([text])[0]
+
+    # Estimate max_tokens per chunk targeting ~25s total (prompt + generated)
+    prompt_duration_s = prompt_features.size(1) * 0.01
+    token_duration_s = prompt_duration_s / max(len(tokens_str), 1) / speed
+    max_tokens = int(max((25 - prompt_duration_s) / max(token_duration_s, 0.01), 20))
+    max_tokens = min(max_tokens, 150)
+
+    chunked_tokens_str = chunk_tokens_punctuation(tokens_str, max_tokens=max_tokens)
+
+    if len(chunked_tokens_str) <= 1:
+        return generate(prompt_tokens, prompt_features_lens, prompt_features, prompt_rms, text, model, vocoder, tokenizer, num_step, guidance_scale, speed, t_shift, target_rms)
+
+    # Generate each chunk
+    chunk_wavs = []
+    with torch.inference_mode():
+        for chunk_str_tokens in chunked_tokens_str:
+            chunk_token_ids = tokenizer.tokens_to_token_ids([chunk_str_tokens])
+
+            (pred_features, _, _, pred_lens) = model.sample(
+                tokens=chunk_token_ids,
+                prompt_tokens=prompt_tokens,
+                prompt_features=prompt_features,
+                prompt_features_lens=prompt_features_lens,
+                speed=speed_internal,
+                t_shift=t_shift,
+                duration='predict',
+                num_step=num_step,
+                guidance_scale=guidance_scale,
+            )
+
+            pred_features = pred_features.permute(0, 2, 1) / 0.1
+            actual_len = pred_lens[0].item()
+            actual_len = min(actual_len, pred_features.size(2))
+            last_frame = pred_features[:, :, actual_len - 1:actual_len]
+            decay = torch.linspace(1.0, 0.0, 5).to(pred_features.device).view(1, 1, -1)
+            tail = last_frame * decay
+            pred_features = torch.cat([pred_features[:, :, :actual_len], tail], dim=2)
+
+            wav = vocoder.decode(pred_features).squeeze(1).clamp(-1, 1)
+            if prompt_rms < target_rms:
+                wav = wav * (prompt_rms / target_rms)
+            chunk_wavs.append(wav)
+
+    final_wav = cross_fade_concat(chunk_wavs, fade_duration=0.1, sample_rate=48000)
+    return final_wav
 
 def load_models_gpu(model_path=None, device="cuda"):
     params = LuxTTSConfig()
