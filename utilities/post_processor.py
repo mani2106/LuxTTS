@@ -399,6 +399,49 @@ class AudioPostProcessor:
 
         return processed.astype(np.float32), diagnostics
 
+    def prosodic_modulation(
+        self,
+        audio: np.ndarray,
+        sr: int,
+        text: str = "",
+    ) -> tuple[np.ndarray, dict]:
+        """
+        Apply subtle amplitude modulation to break flat/robotic quality.
+
+        Modulation depth scales with detected emotional context:
+        calm=0.05, question=0.08, excited=0.12, intense=0.15.
+        """
+        detector = PitchDetector()
+        pitch = detector.detect_pitch(text)
+
+        if pitch >= 2.0:
+            emotion = "intense"
+            depth = 0.15
+        elif pitch >= 1.0:
+            emotion = "excited"
+            depth = 0.12
+        elif pitch >= 0.5:
+            emotion = "question"
+            depth = 0.08
+        else:
+            emotion = "calm"
+            depth = 0.05
+
+        mod_freq = 3.5
+        t = np.arange(len(audio), dtype=np.float64) / sr
+        mod_signal = np.sin(2 * np.pi * mod_freq * t) * depth
+        mod_signal = mod_signal.astype(np.float32)
+
+        processed = audio * (1.0 + mod_signal)
+
+        diagnostics = {}
+        if self.return_diagnostics:
+            diagnostics['emotion'] = emotion
+            diagnostics['modulation_depth'] = depth
+            diagnostics['modulation_freq_hz'] = mod_freq
+
+        return processed.astype(np.float32), diagnostics
+
     @staticmethod
     def _design_peaking(fc: float, Q: float, gain_db: float, sr: int) -> tuple[np.ndarray, np.ndarray]:
         """Design a peaking EQ filter using scipy.signal.iirfilter."""
@@ -970,5 +1013,35 @@ class AudioPostProcessor:
         if self.return_diagnostics:
             diagnostics['wet_level_db'] = wet_db
             diagnostics['rt60_ms'] = rt60 * 1000
+
+        return processed.astype(np.float32), diagnostics
+
+    def spectral_enrich(
+        self,
+        audio: np.ndarray,
+        sr: int,
+        intensity: float = 0.3,
+    ) -> tuple[np.ndarray, dict]:
+        """
+        Add subtle upper harmonics via nonlinear waveshaping.
+
+        High-pass extracts content above 2kHz, applies soft saturation
+        to generate harmonics, then mixes back at low level.
+        """
+        if intensity <= 0.0:
+            return audio.copy(), {}
+
+        b, a = signal.butter(2, 2000 / (sr / 2), btype='high')
+        hf = signal.filtfilt(b, a, audio)
+
+        hf_enriched = np.tanh(hf * 2.0) / 2.0
+
+        mix = intensity * 0.3
+        processed = audio * (1.0 - mix) + hf_enriched * mix
+
+        diagnostics = {}
+        if self.return_diagnostics:
+            diagnostics['intensity'] = intensity
+            diagnostics['mix_level'] = mix
 
         return processed.astype(np.float32), diagnostics
