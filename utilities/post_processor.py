@@ -974,7 +974,7 @@ class AudioPostProcessor:
             all_diagnostics['pitch_shift']['detected_semitones'] = detected_pitch
 
         # Stage 5: Normalize loudness
-        audio, loudness_diagnostics = self.normalize_loudness(audio, sr, target_loudness=target_loudness)
+        audio, loudness_diagnostics = self.normalize_loudness(audio, sr, target_lufs=target_loudness)
         if loudness_diagnostics:
             all_diagnostics['normalize_loudness'] = loudness_diagnostics
 
