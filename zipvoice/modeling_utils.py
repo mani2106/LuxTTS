@@ -71,7 +71,6 @@ def generate(prompt_tokens, prompt_features_lens, prompt_features, prompt_rms, t
             chunk_char_threshold=CHUNK_CHAR_THRESHOLD,
         )
     tokens = tokenizer.texts_to_token_ids([text])
-    device = next(model.parameters()).device
 
     speed = speed * 1.3
 
@@ -109,7 +108,6 @@ def generate(prompt_tokens, prompt_features_lens, prompt_features, prompt_rms, t
 
 def _generate_chunked(prompt_tokens, prompt_features_lens, prompt_features, prompt_rms, text, model, vocoder, tokenizer, num_step=4, guidance_scale=3.0, speed=1.0, t_shift=0.5, target_rms=0.1, chunk_char_threshold=120):
     """Generate speech for longer texts by chunking at punctuation boundaries."""
-    device = next(model.parameters()).device
     speed_internal = speed * 1.3
 
     # Tokenize to string tokens for chunking
@@ -124,7 +122,31 @@ def _generate_chunked(prompt_tokens, prompt_features_lens, prompt_features, prom
     chunked_tokens_str = chunk_tokens_punctuation(tokens_str, max_tokens=max_tokens)
 
     if len(chunked_tokens_str) <= 1:
-        return generate(prompt_tokens, prompt_features_lens, prompt_features, prompt_rms, text, model, vocoder, tokenizer, num_step, guidance_scale, speed, t_shift, target_rms)
+        # Cannot split further — inline single-pass generation to avoid
+        # re-entering generate()'s len(text) > threshold gate (infinite recursion)
+        chunk_token_ids = tokenizer.texts_to_token_ids([text])
+        with torch.inference_mode():
+            (pred_features, _, _, pred_lens) = model.sample(
+                tokens=chunk_token_ids,
+                prompt_tokens=prompt_tokens,
+                prompt_features=prompt_features,
+                prompt_features_lens=prompt_features_lens,
+                speed=speed_internal,
+                t_shift=t_shift,
+                duration='predict',
+                num_step=num_step,
+                guidance_scale=guidance_scale,
+            )
+        pred_features = pred_features.permute(0, 2, 1) / 0.1
+        actual_len = min(pred_lens[0].item(), pred_features.size(2))
+        last_frame = pred_features[:, :, actual_len - 1:actual_len]
+        decay = torch.linspace(1.0, 0.0, 5).to(pred_features.device).view(1, 1, -1)
+        tail = last_frame * decay
+        pred_features = torch.cat([pred_features[:, :, :actual_len], tail], dim=2)
+        wav = vocoder.decode(pred_features).squeeze(1).clamp(-1, 1)
+        if prompt_rms < target_rms:
+            wav = wav * (prompt_rms / target_rms)
+        return wav
 
     # Generate each chunk
     chunk_wavs = []

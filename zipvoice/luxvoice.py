@@ -48,7 +48,7 @@ class LuxTTS:
     def generate_speech(self, text, encode_dict, num_steps=4, guidance_scale=3.0, t_shift=0.5, speed=1.0, return_smooth=False):
         """encodes text and generates speech using flow matching model according to steps, guidance scale, and t_shift(like temp)"""
 
-                        prompt_tokens = copy.deepcopy(encode_dict["prompt_tokens"])
+        prompt_tokens = copy.deepcopy(encode_dict["prompt_tokens"])
         prompt_features_lens = encode_dict["prompt_features_lens"].clone()
         prompt_features = encode_dict["prompt_features"].clone()
         prompt_rms = encode_dict["prompt_rms"].clone()
