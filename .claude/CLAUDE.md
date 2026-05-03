@@ -11,7 +11,18 @@
 > (documentation, ownership, history, decisions). **Always verify against
 > actual source files before making changes** — the index may be stale.
 
-Last indexed: 2026-05-03 (commit 20e832f). Confidence: 100%.
+Last indexed: 2026-05-03 (commit f0c6d07). Confidence: 100%.
+### Architecture
+Zipvoice is a Python-based audio processing and machine learning repository focused on voice synthesis and analysis. The codebase is centered around a custom zipvoice module that provides core utilities for optimization, tokenization, and ONNX modeling. The project includes a robust pipeline for audio generation, quality testing, and post-processing, supported by a suite of utility functions for configuration, caching, and feature extraction. - **Primary Language**: Python (79.3%)
+- **Configuration**: JSON, TOML
+- **Documentation**: Markdown
+- **Key Libraries & Tools**:
+    - ONNX (Modeling and Inference)
+    - PyTorch (implied by optim.py and lr_scheduler.py)
+    - Custom Tokenization and Normalization logic
+
+
+- **utilities/audio_generation_pipeline.py**: Main script for orchestrating the audio generation process.
 ### Key Modules
 | Module | Purpose | Owner |
 |--------|---------|-------|
@@ -27,9 +38,9 @@ Last indexed: 2026-05-03 (commit 20e832f). Confidence: 100%.
 | File | Churn | 90d Commits | Owner |
 |------|-------|-------------|-------|
 | `utilities/post_processor.py` | 100.0th %ile | 14 | mani2106 |
-| `tests/audio_quality/test_full_eval.py` | 98.9th %ile | 5 | mani2106 |
+| `tests/audio_quality/test_full_eval.py` | 99.0th %ile | 5 | mani2106 |
 | `tests/test_post_processor.py` | 97.9th %ile | 10 | mani2106 |
-| `utilities/audio_generation_pipeline.py` | 96.8th %ile | 6 | mani2106 |
+| `utilities/audio_generation_pipeline.py` | 96.9th %ile | 6 | mani2106 |
 | `tests/test_vocalization.py` | 95.8th %ile | 7 | mani2106 |
 
 ### Repowise MCP Tools
