@@ -22,6 +22,17 @@ try:
 except ImportError:
     HAS_PLOUDNORM = False
 
+# TDR Nova VST3 plugin detection
+from utilities.app_constants import TDR_NOVA_VST3_PATH, TDR_NOVA_ENABLED
+
+HAS_TDR_NOVA = False
+if HAS_PEDALBOARD and TDR_NOVA_ENABLED:
+    if TDR_NOVA_VST3_PATH.exists():
+        HAS_TDR_NOVA = True
+        logger.debug(f"TDR Nova VST3 detected at {TDR_NOVA_VST3_PATH}")
+    else:
+        logger.info(f"TDR Nova VST3 not found at {TDR_NOVA_VST3_PATH}, using fallback backends")
+
 
 class PitchDetector:
     """
@@ -110,6 +121,86 @@ class AudioPostProcessor:
             return_diagnostics: If True, return diagnostic metrics from each stage.
         """
         self.return_diagnostics = return_diagnostics
+        self._tdr_nova_plugin = None  # Lazy-loaded VST3 plugin singleton
+
+    @property
+    def tdr_nova_plugin(self):
+        """
+        Lazy-load TDR Nova VST3 plugin as a singleton.
+
+        Thread safety: Loading is done once and cached. Not safe for concurrent
+        process() calls on the same instance, but LuxTTS processes audio sequentially.
+        """
+        if self._tdr_nova_plugin is None and HAS_TDR_NOVA:
+            try:
+                self._tdr_nova_plugin = pedalboard.load_plugin(str(TDR_NOVA_VST3_PATH))
+                logger.debug(f"TDR Nova VST3 loaded from {TDR_NOVA_VST3_PATH}")
+            except Exception as e:
+                logger.warning(f"Failed to load TDR Nova VST3: {e}. Using fallback backends.")
+                self._tdr_nova_plugin = None
+        return self._tdr_nova_plugin
+
+    def _process_tdr_nova(
+        self,
+        audio: np.ndarray,
+        sr: int,
+        de_ess_intensity: float,
+        eq_intensity: float,
+    ) -> tuple[np.ndarray, dict]:
+        """
+        Combined de-essing + EQ using TDR Nova dynamic EQ plugin.
+
+        Replaces separate de_esser() + equalize() stages with a single
+        high-quality plugin pass. TDR Nova provides:
+        - 4 parametric bands with per-band dynamics (compressor/expander)
+        - HP/LP filters
+        - Wide-band dynamics section
+
+        Args:
+            audio: Input audio (float32, 48kHz)
+            sr: Sample rate
+            de_ess_intensity: De-essing strength (0.0-1.0)
+            eq_intensity: EQ processing strength (0.0-1.0)
+
+        Returns:
+            (processed_audio, diagnostics_dict)
+        """
+        from utilities.tdr_nova_config import build_tts_preset, apply_preset
+
+        plugin = self.tdr_nova_plugin
+        if plugin is None:
+            return audio.copy(), {}
+
+        # Build and apply parameter preset
+        params = build_tts_preset(
+            de_ess_intensity=de_ess_intensity,
+            eq_intensity=eq_intensity,
+        )
+        errors = apply_preset(plugin, params)
+        if errors:
+            logger.warning(f"TDR Nova preset had {len(errors)} errors, some bands may not apply")
+
+        # Process audio through plugin
+        try:
+            processed = plugin(audio, sr)
+        except Exception as e:
+            logger.warning(f"TDR Nova processing failed: {e}. Returning original audio.")
+            return audio.copy(), {'error': str(e)}
+
+        # NaN safety check — VST3 plugins can produce NaN on edge cases
+        if np.any(np.isnan(processed)) or np.any(np.isinf(processed)):
+            logger.warning("TDR Nova produced NaN/Inf output. Returning original audio.")
+            return audio.copy(), {'error': 'NaN/Inf in output'}
+
+        diagnostics = {}
+        if self.return_diagnostics:
+            diagnostics['backend'] = 'tdr_nova'
+            diagnostics['de_ess_intensity'] = de_ess_intensity
+            diagnostics['eq_intensity'] = eq_intensity
+            if errors:
+                diagnostics['preset_errors'] = list(errors.keys())
+
+        return processed.astype(np.float32), diagnostics
 
     def de_esser(
         self,
@@ -131,14 +222,11 @@ class AudioPostProcessor:
         Returns:
             (processed_audio, diagnostics_dict)
         """
-        # Bypass if intensity is zero, regardless of available backends
+        # Bypass if intensity is zero
         if intensity <= 0.0:
             return audio.copy(), {}
 
-        # Use pedalboard if available, otherwise native scipy
-        if HAS_PEDALBOARD:
-            return self._de_esser_pedalboard(audio, sr, intensity)
-
+        # Always use native scipy — pedalboard has no built-in DeEsser
         return self._de_esser_native(audio, sr, intensity)
 
     def _de_esser_native(
@@ -184,26 +272,6 @@ class AudioPostProcessor:
         diagnostics = {}
         if self.return_diagnostics:
             diagnostics['reduction_db_curve'] = 20 * np.log10(gain_reduction + 1e-10)
-
-        return processed.astype(np.float32), diagnostics
-
-    def _de_esser_pedalboard(
-        self,
-        audio: np.ndarray,
-        sr: int,
-        intensity: float,
-    ) -> tuple[np.ndarray, dict]:
-        """Pedalboard implementation of de-essing."""
-        # Map intensity (0-1) to pedalboard parameters
-        # pedalboard.DeEsser uses frequency (Hz) and threshold (dB)
-        de_esser = pedalboard.DeEsser()
-
-        processed = de_esser(audio, sr)
-
-        diagnostics = {}
-        if self.return_diagnostics:
-            # Pedalboard doesn't expose gain curve, use placeholder
-            diagnostics['reduction_db_curve'] = np.zeros(len(audio) // 100)  # Downsampled
 
         return processed.astype(np.float32), diagnostics
 
@@ -328,6 +396,49 @@ class AudioPostProcessor:
         diagnostics = {}
         if self.return_diagnostics:
             diagnostics['semitones_applied'] = float(n_steps)
+
+        return processed.astype(np.float32), diagnostics
+
+    def prosodic_modulation(
+        self,
+        audio: np.ndarray,
+        sr: int,
+        text: str = "",
+    ) -> tuple[np.ndarray, dict]:
+        """
+        Apply subtle amplitude modulation to break flat/robotic quality.
+
+        Modulation depth scales with detected emotional context:
+        calm=0.05, question=0.08, excited=0.12, intense=0.15.
+        """
+        detector = PitchDetector()
+        pitch = detector.detect_pitch(text)
+
+        if pitch >= 2.0:
+            emotion = "intense"
+            depth = 0.15
+        elif pitch >= 1.0:
+            emotion = "excited"
+            depth = 0.12
+        elif pitch >= 0.5:
+            emotion = "question"
+            depth = 0.08
+        else:
+            emotion = "calm"
+            depth = 0.05
+
+        mod_freq = 3.5
+        t = np.arange(len(audio), dtype=np.float64) / sr
+        mod_signal = np.sin(2 * np.pi * mod_freq * t) * depth
+        mod_signal = mod_signal.astype(np.float32)
+
+        processed = audio * (1.0 + mod_signal)
+
+        diagnostics = {}
+        if self.return_diagnostics:
+            diagnostics['emotion'] = emotion
+            diagnostics['modulation_depth'] = depth
+            diagnostics['modulation_freq_hz'] = mod_freq
 
         return processed.astype(np.float32), diagnostics
 
@@ -778,7 +889,10 @@ class AudioPostProcessor:
         2. EQ (tame harshness, add warmth)
         3. Compressor (soft-knee, adaptive threshold, look-ahead, makeup gain)
         4. Pitch shift (adjust pitch)
-        5. Normalize loudness (EBU R128)
+        5. Prosodic modulation (micro amplitude variation)
+        6. Room presence (subtle early reflections)
+        7. Spectral enrichment (harmonic exciter)
+        8. Normalize loudness (EBU R128)
 
         Args:
             audio: Input audio (float32, typically 48kHz)
@@ -801,10 +915,13 @@ class AudioPostProcessor:
             - processed_audio: The final processed audio
             - diagnostics_dict: Nested dict with per-stage diagnostics
                 {
-                    'de_esser': {...},
-                    'equalize': {...},
+                    'de_esser': {...},  # or 'tdr_nova' if using TDR Nova
+                    'equalize': {...},  # not present if using TDR Nova
                     'compressor': {...},
                     'pitch_shift': {...},
+                    'prosodic_modulation': {...},
+                    'room_presence': {...},
+                    'spectral_enrich': {...},
                     'normalize_loudness': {...}
                 }
         """
@@ -815,15 +932,22 @@ class AudioPostProcessor:
         # Initialize diagnostics
         all_diagnostics = {}
 
-        # Stage 1: De-esser
-        audio, de_ess_diagnostics = self.de_esser(audio, sr, intensity=de_ess_intensity)
-        if de_ess_diagnostics:
-            all_diagnostics['de_esser'] = de_ess_diagnostics
+        # Stage 1+2: De-esser + EQ (combined via TDR Nova if available)
+        if HAS_TDR_NOVA and self.tdr_nova_plugin is not None:
+            audio, nova_diag = self._process_tdr_nova(
+                audio, sr, de_ess_intensity, eq_intensity
+            )
+            if nova_diag:
+                all_diagnostics['tdr_nova'] = nova_diag
+        else:
+            # Fallback: separate de-esser + EQ stages
+            audio, de_ess_diagnostics = self.de_esser(audio, sr, intensity=de_ess_intensity)
+            if de_ess_diagnostics:
+                all_diagnostics['de_esser'] = de_ess_diagnostics
 
-        # Stage 2: EQ
-        audio, eq_diagnostics = self.equalize(audio, sr, intensity=eq_intensity)
-        if eq_diagnostics:
-            all_diagnostics['equalize'] = eq_diagnostics
+            audio, eq_diagnostics = self.equalize(audio, sr, intensity=eq_intensity)
+            if eq_diagnostics:
+                all_diagnostics['equalize'] = eq_diagnostics
 
         # Stage 3: Compressor (advanced with soft-knee, adaptive threshold, look-ahead, makeup gain)
         audio, compressor_diagnostics = self.compress(
@@ -855,9 +979,90 @@ class AudioPostProcessor:
         else:
             all_diagnostics['pitch_shift']['detected_semitones'] = detected_pitch
 
-        # Stage 5: Normalize loudness
+        # Stage 5: Prosodic micro-modulation
+        audio, prosodic_diagnostics = self.prosodic_modulation(audio, sr, text=text or "")
+        if prosodic_diagnostics:
+            all_diagnostics['prosodic_modulation'] = prosodic_diagnostics
+
+        # Stage 6: Room presence
+        audio, room_diagnostics = self.room_presence(audio, sr)
+        if room_diagnostics:
+            all_diagnostics['room_presence'] = room_diagnostics
+
+        # Stage 7: Spectral enrichment
+        audio, enrich_diagnostics = self.spectral_enrich(audio, sr)
+        if enrich_diagnostics:
+            all_diagnostics['spectral_enrich'] = enrich_diagnostics
+
+        # Stage 8: Normalize loudness
         audio, loudness_diagnostics = self.normalize_loudness(audio, sr, target_lufs=target_loudness)
         if loudness_diagnostics:
             all_diagnostics['normalize_loudness'] = loudness_diagnostics
 
         return audio.astype(np.float32), all_diagnostics
+
+    def room_presence(
+        self,
+        audio: np.ndarray,
+        sr: int,
+        room_size: str = "small",
+        wet_db: float = -12.0,
+    ) -> tuple[np.ndarray, dict]:
+        """
+        Add subtle room presence via synthetic early reflections.
+
+        Generates a bandpass-filtered exponentially-decaying impulse response
+        and convolves it with the audio at a low wet level.
+        """
+        rt60 = 0.08 if room_size == "small" else 0.15
+        ir_length = int(rt60 * sr)
+
+        rng = np.random.RandomState(42)
+        ir = rng.randn(ir_length).astype(np.float32)
+
+        ir *= np.exp(-np.linspace(0, 6, ir_length)).astype(np.float32)
+
+        b, a = signal.butter(2, [200 / (sr / 2), 8000 / (sr / 2)], btype='band')
+        ir = signal.filtfilt(b, a, ir).astype(np.float32)
+        ir /= np.max(np.abs(ir)) + 1e-10
+
+        reverb = np.convolve(audio, ir, mode='full')[:len(audio)].astype(np.float32)
+        wet_gain = 10 ** (wet_db / 20)
+        processed = audio + reverb * wet_gain
+
+        diagnostics = {}
+        if self.return_diagnostics:
+            diagnostics['wet_level_db'] = wet_db
+            diagnostics['rt60_ms'] = rt60 * 1000
+
+        return processed.astype(np.float32), diagnostics
+
+    def spectral_enrich(
+        self,
+        audio: np.ndarray,
+        sr: int,
+        intensity: float = 0.3,
+    ) -> tuple[np.ndarray, dict]:
+        """
+        Add subtle upper harmonics via nonlinear waveshaping.
+
+        High-pass extracts content above 2kHz, applies soft saturation
+        to generate harmonics, then mixes back at low level.
+        """
+        if intensity <= 0.0:
+            return audio.copy(), {}
+
+        b, a = signal.butter(2, 2000 / (sr / 2), btype='high')
+        hf = signal.filtfilt(b, a, audio)
+
+        hf_enriched = np.tanh(hf * 2.0) / 2.0
+
+        mix = intensity * 0.3
+        processed = audio * (1.0 - mix) + hf_enriched * mix
+
+        diagnostics = {}
+        if self.return_diagnostics:
+            diagnostics['intensity'] = intensity
+            diagnostics['mix_level'] = mix
+
+        return processed.astype(np.float32), diagnostics

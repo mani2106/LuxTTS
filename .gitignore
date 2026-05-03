@@ -193,10 +193,13 @@ cython_debug/
 #  refer to https://docs.cursor.com/context/ignore-files
 .cursorignore
 .cursorindexingignore
-docs/
 models/
 
 # SkyrimNet-LuxTTS server
 cache/
 output_tmp/
 speakers/
+
+# repowise API keys (local)
+.repowise/.env
+.repowise/

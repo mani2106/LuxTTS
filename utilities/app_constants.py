@@ -16,15 +16,15 @@ DEFAULT_SEED = 420
 DEFAULT_RMS = 0.03  # Higher makes it sound louder
 DEFAULT_T_SHIFT = 0.9  # Sampling param, higher can sound better but worse WER
 DEFAULT_RETURN_SMOOTH = True  # Makes it sound smoother possibly but less cleaner
-DEFAULT_REF_DURATION = 10  # Lower speeds up inference; set to 1000 if artifacts in beginning
+DEFAULT_REF_DURATION = 3  # Lower speeds up inference; ZipVoice recommends 1-3s
 
 # Post-processing defaults
 DEFAULT_POST_PROCESSING_ENABLED = True
 DEFAULT_PITCH_SHIFT = None  # None = auto from text
 DEFAULT_EQ_INTENSITY = 1.0
 DEFAULT_COMPRESSOR_THRESHOLD_OFFSET = -6.0  # dB offset from signal RMS
-DEFAULT_COMPRESSOR_RATIO = 4.0
-DEFAULT_COMPRESSOR_KNEE_DB = 4.0
+DEFAULT_COMPRESSOR_RATIO = 2.0
+DEFAULT_COMPRESSOR_KNEE_DB = 8.0
 DEFAULT_COMPRESSOR_ATTACK_MS = 10.0
 DEFAULT_COMPRESSOR_RELEASE_MS = 100.0
 DEFAULT_MAX_GAIN_REDUCTION_DB = 12.0
@@ -50,6 +50,10 @@ PING_TEXT = "ping"
 
 # Model storage
 MODELS_DIR = Path("models")
+
+# TDR Nova VST3 plugin configuration
+TDR_NOVA_VST3_PATH = Path(r"F:\Software\TDR Nova (no installer)\VST3\x64\TDR Nova.vst3")
+TDR_NOVA_ENABLED = True  # Set False to use pedalboard/scipy fallback
 
 # Create directories on import
 EMBEDS_CACHE_DIR.mkdir(parents=True, exist_ok=True)

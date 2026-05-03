@@ -2,7 +2,7 @@
 
 import pytest
 import numpy as np
-from utilities.post_processor import PitchDetector, AudioPostProcessor
+from utilities.post_processor import PitchDetector, AudioPostProcessor, HAS_TDR_NOVA
 
 
 def test_pitch_detector_all_caps():
@@ -517,3 +517,227 @@ def test_process_with_all_caps_text(sample_48k_audio):
     assert processed is not None
     if 'pitch_shift' in diagnostics:
         assert diagnostics['pitch_shift']['detected_semitones'] == 2.0
+
+
+def test_process_full_chain_includes_expressiveness(sample_48k_audio):
+    """Full chain should include prosodic_modulation, room_presence, spectral_enrich."""
+    audio, sr = sample_48k_audio
+    processor = AudioPostProcessor(return_diagnostics=True)
+
+    processed, diagnostics = processor.process(
+        audio, sr,
+        text="Hello world",
+        eq_intensity=1.0,
+        de_ess_intensity=0.5,
+        target_loudness=-16.0,
+    )
+
+    assert processed is not None
+    assert len(processed) > 0
+    assert not np.any(np.isnan(processed))
+    assert 'prosodic_modulation' in diagnostics
+    assert 'room_presence' in diagnostics
+    assert 'spectral_enrich' in diagnostics
+
+
+def test_prosodic_modulation_changes_audio(sample_48k_audio):
+    """Prosodic modulation should subtly vary amplitude."""
+    audio, sr = sample_48k_audio
+    processor = AudioPostProcessor(return_diagnostics=True)
+
+    processed, diagnostics = processor.prosodic_modulation(audio, sr, text="This is exciting!")
+
+    assert processed is not None
+    assert len(processed) == len(audio)
+    assert processed.dtype == np.float32
+    assert not np.allclose(processed, audio, atol=1e-6)
+    assert 'emotion' in diagnostics
+
+
+def test_prosodic_modulation_calm_text_shallower(sample_48k_audio):
+    """Calm text should have shallower modulation than excited text."""
+    audio, sr = sample_48k_audio
+    processor = AudioPostProcessor()
+
+    calm_processed, _ = processor.prosodic_modulation(audio, sr, text="Hello world")
+    excited_processed, _ = processor.prosodic_modulation(audio, sr, text="This is exciting!")
+
+    calm_diff = np.sqrt(np.mean((calm_processed - audio) ** 2))
+    excited_diff = np.sqrt(np.mean((excited_processed - audio) ** 2))
+
+    assert excited_diff > calm_diff
+
+
+def test_prosodic_modulation_silence():
+    """Prosodic modulation on silence should remain silence."""
+    sr = 48000
+    silence = np.zeros(48000, dtype=np.float32)
+    processor = AudioPostProcessor()
+
+    processed, _ = processor.prosodic_modulation(silence, sr, text="Hello!")
+
+    np.testing.assert_allclose(processed, silence, atol=1e-7)
+
+
+# ---- TDR Nova integration tests ----
+
+
+def test_tdr_nova_combined_deess_and_eq(sample_48k_audio):
+    """TDR Nova path should process de-essing and EQ in one pass."""
+    audio, sr = sample_48k_audio
+    processor = AudioPostProcessor(return_diagnostics=True)
+
+    if not HAS_TDR_NOVA:
+        pytest.skip("TDR Nova VST3 not available")
+
+    processed, diagnostics = processor._process_tdr_nova(
+        audio, sr, de_ess_intensity=0.5, eq_intensity=1.0,
+    )
+
+    assert processed is not None
+    assert len(processed) == len(audio)
+    assert not np.any(np.isnan(processed))
+    assert 'backend' in diagnostics
+    assert diagnostics['backend'] == 'tdr_nova'
+
+
+def test_tdr_nova_zero_intensity(sample_48k_audio):
+    """TDR Nova with zero intensities should still pass audio through."""
+    audio, sr = sample_48k_audio
+    processor = AudioPostProcessor(return_diagnostics=True)
+
+    if not HAS_TDR_NOVA:
+        pytest.skip("TDR Nova VST3 not available")
+
+    processed, diagnostics = processor._process_tdr_nova(
+        audio, sr, de_ess_intensity=0.0, eq_intensity=0.0,
+    )
+
+    assert processed is not None
+    assert len(processed) == len(audio)
+    assert not np.any(np.isnan(processed))
+
+
+def test_process_uses_tdr_nova_when_available(sample_48k_audio):
+    """Full process() should use TDR Nova when available."""
+    audio, sr = sample_48k_audio
+    processor = AudioPostProcessor(return_diagnostics=True)
+
+    processed, diagnostics = processor.process(
+        audio, sr,
+        text="Hello world",
+        eq_intensity=1.0,
+        de_ess_intensity=0.5,
+        target_loudness=-16.0,
+    )
+
+    assert processed is not None
+    assert len(processed) > 0
+    assert not np.any(np.isnan(processed))
+
+    if HAS_TDR_NOVA:
+        assert 'tdr_nova' in diagnostics
+        assert 'de_esser' not in diagnostics  # Should not have separate stages
+
+
+def test_tdr_nova_fallback_when_missing(sample_48k_audio):
+    """If TDR Nova is disabled, should fall back to separate de-esser + EQ."""
+    audio, sr = sample_48k_audio
+    import utilities.post_processor as pp
+
+    original_has_tdr = pp.HAS_TDR_NOVA
+    pp.HAS_TDR_NOVA = False
+
+    try:
+        processor = AudioPostProcessor(return_diagnostics=True)
+        processed, diagnostics = processor.process(
+            audio, sr,
+            text="Hello",
+            de_ess_intensity=0.5,
+            eq_intensity=1.0,
+            target_loudness=-16.0,
+        )
+
+        assert processed is not None
+        assert not np.any(np.isnan(processed))
+        assert 'tdr_nova' not in diagnostics
+    finally:
+        pp.HAS_TDR_NOVA = original_has_tdr
+
+
+def test_room_presence_adds_reverb(sample_48k_audio):
+    """Room presence should add subtle reverb tail."""
+    audio, sr = sample_48k_audio
+    processor = AudioPostProcessor(return_diagnostics=True)
+
+    processed, diagnostics = processor.room_presence(audio, sr)
+
+    assert processed is not None
+    assert len(processed) == len(audio)
+    assert processed.dtype == np.float32
+    assert not np.allclose(processed, audio, atol=1e-6)
+    assert 'wet_level_db' in diagnostics
+    assert diagnostics['wet_level_db'] == -12.0
+
+
+def test_room_presence_silence():
+    """Room presence on silence should remain near-silence."""
+    sr = 48000
+    silence = np.zeros(48000, dtype=np.float32)
+    processor = AudioPostProcessor()
+
+    processed, _ = processor.room_presence(silence, sr)
+
+    assert np.max(np.abs(processed)) < 1e-6
+
+
+def test_room_presence_louder_wet_signal():
+    """Higher wet level should produce more noticeable reverb."""
+    sr = 48000
+    t = np.linspace(0, 0.5, int(sr * 0.5))
+    audio = (0.5 * np.sin(2 * np.pi * 440 * t)).astype(np.float32)
+
+    processor = AudioPostProcessor()
+
+    quiet, _ = processor.room_presence(audio, sr, wet_db=-20)
+    loud, _ = processor.room_presence(audio, sr, wet_db=-6)
+
+    quiet_diff = np.sqrt(np.mean((quiet - audio) ** 2))
+    loud_diff = np.sqrt(np.mean((loud - audio) ** 2))
+
+    assert loud_diff > quiet_diff
+
+
+def test_spectral_enrich_adds_harmonics(sample_48k_audio):
+    """Spectral enrichment should modify audio by adding upper harmonics."""
+    audio, sr = sample_48k_audio
+    processor = AudioPostProcessor(return_diagnostics=True)
+
+    processed, diagnostics = processor.spectral_enrich(audio, sr)
+
+    assert processed is not None
+    assert len(processed) == len(audio)
+    assert processed.dtype == np.float32
+    assert not np.allclose(processed, audio, atol=1e-6)
+    assert 'intensity' in diagnostics
+
+
+def test_spectral_enrich_zero_intensity_bypass(sample_48k_audio):
+    """Zero intensity should bypass spectral enrichment."""
+    audio, sr = sample_48k_audio
+    processor = AudioPostProcessor()
+
+    processed, _ = processor.spectral_enrich(audio, sr, intensity=0.0)
+
+    np.testing.assert_allclose(processed, audio, atol=1e-6)
+
+
+def test_spectral_enrich_silence():
+    """Spectral enrichment on silence should remain silence."""
+    sr = 48000
+    silence = np.zeros(48000, dtype=np.float32)
+    processor = AudioPostProcessor()
+
+    processed, _ = processor.spectral_enrich(silence, sr)
+
+    np.testing.assert_allclose(processed, silence, atol=1e-7)

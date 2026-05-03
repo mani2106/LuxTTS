@@ -124,6 +124,61 @@ The Gradio UI (`SkyrimNet-LuxTTS.py`) provides an A/B preview feature:
 
 Enable via "Save Raw (A/B Preview)" checkbox in the UI.
 
+<details>
+<summary><strong>Vocalization Audio Tags</strong></summary>
+
+The server supports ElevenLabs-style `[bracket]` audio tags for non-speech vocalizations embedded within dialogue text. This enables expressive speech output with sighs, gasps, whispers, and more — all generated from the same voice used for speech.
+
+### Supported Tags (14 total)
+
+| Category | Tags |
+|----------|------|
+| **Human Reactions** | `[sighs]`, `[groans]`, `[moans]` |
+| **Emotional** | `[gasps]`, `[screams]`, `[shouts]`, `[laughs]`, `[sobs]`, `[whimpers]` |
+| **Breath/Air** | `[breathes heavily]`, `[clears throat]`, `[coughs]` |
+| **Delivery** | `[whispers]` (modifies next speech segment), `[pause]` (0.3s silence) |
+
+### Usage Examples
+
+```
+[sighs] I can't believe we made it.
+Stop! [gasps] How did you find me?
+[whispers] Don't make a sound.
+[screams] Get away from me!
+[breathes heavily] We need to keep moving.
+Hello [pause] my friend.
+```
+
+Just include tags in your text input — the server handles parsing, generation, and crossfade stitching automatically.
+
+<details>
+<summary>How It Works</summary>
+
+1. **Tag Parser** — Scans text for `[bracket]` tags, splits into speech/vocalization segments
+2. **Vocalization Generator** — For each vocalization tag, generates TTS audio from a phonetic template, then applies a DSP effect chain (pitch shift, filters, breath noise, etc.)
+3. **Whisper Mode** — `[whispers]` applies DSP effects to the following speech segment instead of generating standalone audio
+4. **Stitcher** — Crossfades all segments together with 50ms overlaps
+
+</details>
+
+<details>
+<summary>Performance</summary>
+
+- **Zero overhead** when no tags are present (single regex scan)
+- **With tags**: ~100–300ms extra DSP processing per vocalization segment
+- All DSP uses numpy/scipy — no GPU required
+
+</details>
+
+<details>
+<summary>Extending with Custom Tags</summary>
+
+Tag recipes are defined in `utilities/vocalization/recipes.json`. Each recipe maps a tag name to TTS text, speed, max duration, and a DSP effect chain. Add new tags by editing this file — no code changes required.
+
+</details>
+
+</details>
+
 ---
 
 <details>

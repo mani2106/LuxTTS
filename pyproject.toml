@@ -35,6 +35,12 @@ train = [
 requires = ["uv_build>=0.9.6,<0.10.0"]
 build-backend = "uv_build"
 
+[tool.pytest.ini_options]
+markers = [
+    "gpu: tests requiring GPU",
+    "slow: tests that take longer than a few seconds",
+]
+
 [tool.ruff]
 line-length = 120
 

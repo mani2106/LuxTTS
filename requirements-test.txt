@@ -1,0 +1,16 @@
+# VERSA evaluation toolkit (UTMOS, DNSMOS, speaker similarity, WER)
+versa-speech-audio-toolkit @ git+https://github.com/wavlab-speech/versa.git
+
+# Audio I/O
+soundfile
+
+# Speaker embeddings for custom similarity checks
+resemblyzer
+
+# Test infrastructure
+pytest
+pytest-timeout
+pytest-xdist
+
+# Reporting
+jinja2
