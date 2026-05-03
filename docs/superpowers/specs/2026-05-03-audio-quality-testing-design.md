@@ -100,9 +100,10 @@ requirements-test.txt                     # Test-only dependencies
 
 ### Test Tiers
 
-#### Tier 1: Fast CI (< 2 min, no GPU)
+#### Tier 1: Fast CI (< 2 min, pure CPU, no GPU)
 
-**Trigger:** Every PR, every push.
+**Trigger:** Every PR, every push. Must run on GitHub Actions free tier (CPU-only runner).
+**Constraint:** No model loading, no GPU, no heavy ML inference. Pure signal analysis on pre-generated audio.
 **Method:** Load pre-generated WAV fixtures, run lightweight metrics.
 
 Test cases (pre-generated):
@@ -113,8 +114,10 @@ Test cases (pre-generated):
 - Batch test: 5 sequential generations from same speaker
 - Edge cases: all-caps, question, ellipsis
 
-Metrics: DNSMOS (ONNX), silence/artifact detector, post-processing delta on fixtures.
+Metrics: DNSMOS (ONNX, CPU), silence/artifact detector, post-processing delta on fixtures.
 Pass criterion: No metric drops >5% from baseline.
+
+**GitHub CI compatible:** Yes. All Tier 1 tests run on CPU-only runners. DNSMOS ONNX model is ~5MB and runs in ~200ms per sample on CPU.
 
 #### Tier 2: Full Evaluation (~10-15 min, GPU)
 
