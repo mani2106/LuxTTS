@@ -1,13 +1,12 @@
-"""Tier 2: Full evaluation tests (GPU required).
+"""Tier 2: Gate-only GPU tests for audio quality.
 
-Generates fresh audio with LuxTTS, scores it with VERSA + custom metrics.
-Uses speaker samples from speakers/en/ as voice cloning references.
+Generates audio with LuxTTS using diverse speaker samples.
+Runs hard constraint checks (clipping, silence, duration).
+Saves generated audio + manifest for CLI scoring.
 
-Two categories of tests:
-- GATE tests: Binary pass/fail on hard quality constraints (clipping, silence, duration).
-- MEASUREMENT tests: Record scores to JSON for regression tracking. These FAIL if
-  scores drop below minimum floors, but their primary purpose is to capture actual
-  values for baseline comparison.
+NO scoring logic lives here. Use the CLI to score:
+    python tests/eval_audio_quality.py score
+    python tests/eval_audio_quality.py compare
 
 Run with:
     pytest tests/audio_quality/test_full_eval.py -v -m gpu
@@ -15,71 +14,36 @@ Run with:
 """
 
 import asyncio
-import json
+import shutil
 from pathlib import Path
 
 import librosa
 import numpy as np
 import pytest
 
+from tests.audio_quality.conftest import SPEAKERS, SPEAKER_SUBSET, GENERATION_CONFIG
+
 pytestmark = [pytest.mark.gpu, pytest.mark.slow]
 
-SPEAKERS_DIR = Path("speakers") / "en"
-SAMPLE_RATE = 48000
-SCORES_OUTPUT = Path("tests/audio_quality/baselines/latest_scores.json")
+# Subset of speakers for tests that don't need the full matrix.
+# Most tests use ALL speakers via parametrize; these are for single-speaker tests.
+DEFAULT_SPEAKER = "cicero"
 
-# Hard floors — anything below these is a clear quality problem.
-# These are NOT aspirational targets. They represent "clearly broken" levels.
-MIN_DNSMOS_SIG = 2.0
-MIN_DNSMOS_OVRL = 2.0
-MIN_DNSMOS_BAK = 2.0
-MAX_SILENCE_RATIO = 0.5
-MAX_TRAILING_SILENCE_MS = 800
-MIN_DURATION_S = 0.3
-MAX_DURATION_S = 30.0
-MIN_SPEAKER_SIMILARITY = 0.2
-MIN_WER_PASS = 0.5
+# Gate test cases: name -> (enable_post_processing)
+GATE_TEST_CASES = [
+    ("basic_speech", True),
+    ("raw_tts_no_postproc", False),
+]
 
-
-# --- Score collection ---
-
-_collected_scores = {}
+VOCALIZATION_CASES = [
+    ("vocalization_sighs", "[sighs] I can't believe we made it."),
+    ("vocalization_gasps", "[gasps] Who's there?"),
+    ("vocalization_whispers", "[whispers] Don't make a sound."),
+    ("vocalization_screams", "[screams] Get away from me!"),
+]
 
 
-def _record_score(test_name: str, scores: dict):
-    """Record scores for JSON output at session end."""
-    _collected_scores[test_name] = scores
-
-
-def pytest_sessionfinish(session, exitstatus):
-    """Write collected scores to JSON file after all tests complete."""
-    if _collected_scores:
-        SCORES_OUTPUT.parent.mkdir(parents=True, exist_ok=True)
-        with open(SCORES_OUTPUT, "w", encoding="utf-8") as f:
-            json.dump(_collected_scores, f, indent=2)
-        print(f"\nScores saved to {SCORES_OUTPUT}")
-
-
-# --- Fixtures ---
-
-
-@pytest.fixture(scope="session")
-def speaker_audio_path():
-    """Path to a speaker reference sample for voice cloning."""
-    speaker = SPEAKERS_DIR / "cicero.wav"
-    if not speaker.exists():
-        pytest.skip(f"Speaker file not found: {speaker}")
-    return str(speaker)
-
-
-@pytest.fixture(scope="session")
-def speaker_audio_array(speaker_audio_path):
-    """Load speaker reference audio as numpy array at 48kHz."""
-    audio, sr = librosa.load(speaker_audio_path, sr=SAMPLE_RATE)
-    return audio, sr
-
-
-def _run_generate(text, speaker_audio_path, enable_post_processing=True, save_raw=False, seed=42, randomize_seed=False):
+def _run_generate(text, speaker_audio_path, enable_post_processing=True, seed=42):
     """Synchronous wrapper around async generate_audio."""
     from utilities.audio_generation_pipeline import generate_audio
     from utilities.app_config import AppConfig
@@ -92,8 +56,8 @@ def _run_generate(text, speaker_audio_path, enable_post_processing=True, save_ra
         config=config,
         enable_post_processing=enable_post_processing,
         seed=seed,
-        randomize_seed=randomize_seed,
-        save_raw=save_raw,
+        randomize_seed=False,
+        save_raw=False,
         return_diagnostics=False,
     )
 
@@ -107,9 +71,64 @@ def _run_generate(text, speaker_audio_path, enable_post_processing=True, save_ra
 
 
 def _load_generated_audio(output_path):
-    """Load a generated WAV file as numpy array."""
-    audio, sr = librosa.load(output_path, sr=SAMPLE_RATE)
+    """Load a generated WAV file as numpy array at 48kHz."""
+    audio, sr = librosa.load(output_path, sr=48000)
     return audio.astype(np.float32), sr
+
+
+def _save_to_manifest(manifest, output_dir, test_name, speaker, speaker_ref_path,
+                      text, enable_post_processing, audio_path, seed, duration_s,
+                      gate_results, passed_gates, gen_config):
+    """Save generated audio to output dir and append to manifest."""
+    dest_name = f"{test_name}_{speaker}.wav"
+    dest_path = output_dir / dest_name
+    shutil.copy2(audio_path, dest_path)
+
+    manifest.append({
+        "test_name": test_name,
+        "speaker": speaker,
+        "speaker_ref_path": speaker_ref_path,
+        "text": text,
+        "enable_post_processing": enable_post_processing,
+        "audio_path": str(dest_path),
+        "seed": seed,
+        "duration_s": round(duration_s, 2),
+        "passed_gates": passed_gates,
+        "gate_results": gate_results,
+        "generation_config": {**gen_config, "seed": seed},
+    })
+
+
+def _check_gates(audio, sr, test_name, speaker):
+    """Run gate checks on audio. Returns (gate_results, passed, errors)."""
+    from tests.audio_quality.scorers.custom_scorers import detect_silence_artifacts
+
+    duration_s = len(audio) / sr
+    artifacts = detect_silence_artifacts(audio, sr)
+
+    errors = []
+
+    if not (0.3 <= duration_s <= 30.0):
+        errors.append(f"Duration out of range: {duration_s:.2f}s")
+
+    if artifacts["has_clipping"]:
+        errors.append(f"Clipping detected (peak={artifacts['peak_amplitude']:.3f})")
+
+    if artifacts["trailing_silence_ms"] >= 800:
+        errors.append(f"Excessive trailing silence: {artifacts['trailing_silence_ms']:.0f}ms")
+
+    if artifacts["silence_ratio"] >= 0.5:
+        errors.append(f"Too much silence: {artifacts['silence_ratio']:.1%}")
+
+    gate_results = {
+        "has_clipping": artifacts["has_clipping"],
+        "trailing_silence_ms": round(artifacts["trailing_silence_ms"], 1),
+        "silence_ratio": round(artifacts["silence_ratio"], 3),
+        "peak_amplitude": round(artifacts["peak_amplitude"], 3),
+    }
+
+    passed = len(errors) == 0
+    return gate_results, passed, errors
 
 
 # --- Structural tests (no GPU needed) ---
@@ -136,182 +155,54 @@ def test_full_eval_case_has_reference_text():
             )
 
 
-# --- GPU generation + scoring tests ---
+# --- GPU gate tests: basic speech with all speakers ---
 
 
-@pytest.mark.parametrize("case_name", [
-    "basic_speech",
-    "raw_tts_no_postproc",
-])
-def test_generate_and_score_quality(case_name, speaker_audio_path):
-    """Generate audio, run gate checks, and record DNSMOS scores.
+@pytest.mark.parametrize("case_name,enable_postproc", GATE_TEST_CASES)
+@pytest.mark.parametrize("speaker", SPEAKERS)
+def test_generate_audio_gates(case_name, enable_postproc, speaker,
+                               speaker_map, manifest, output_dir, generation_config):
+    """Generate audio for each speaker and run gate checks.
 
-    Gate checks (must pass): no clipping, reasonable silence, valid duration.
-    Measurement (recorded): DNSMOS SIG/OVRL/BAK scores saved to JSON.
+    Run full matrix (12 speakers) by default.
+    Fast PR check: pytest -m gpu -k "basic_speech and cicero or femalenord or alduin"
     """
-    from tests.audio_quality.suites.full_eval import FULL_EVAL_CASES
-    from tests.audio_quality.scorers.custom_scorers import detect_silence_artifacts
-    from tests.audio_quality.scorers.versa_scorer import score_dnsmos
+    if speaker not in speaker_map:
+        pytest.skip(f"Speaker file not found: {speaker}")
 
-    case = next(c for c in FULL_EVAL_CASES if c.name == case_name)
+    speaker_path = speaker_map[speaker]
+    text = "Hello, how are you doing today?"
+    seed = 42
 
-    result = _run_generate(
-        case.text, speaker_audio_path,
-        enable_post_processing=case.enable_post_processing,
-    )
-    output_path = result[0]
-    audio, sr = _load_generated_audio(output_path)
+    result = _run_generate(text, speaker_path, enable_post_processing=enable_postproc, seed=seed)
+    audio, sr = _load_generated_audio(result[0])
     duration_s = len(audio) / sr
 
-    # --- Gate checks (hard constraints) ---
-    assert MIN_DURATION_S <= duration_s <= MAX_DURATION_S, (
-        f"[{case_name}] Duration out of range: {duration_s:.2f}s"
+    gate_results, passed, errors = _check_gates(audio, sr, case_name, speaker)
+
+    assert passed, (
+        f"[{case_name}/{speaker}] Gate failures: {'; '.join(errors)}"
     )
 
-    artifacts = detect_silence_artifacts(audio, sr)
-    assert artifacts["has_clipping"] is False, (
-        f"[{case_name}] Clipping detected! peak={artifacts['peak_amplitude']:.3f}"
-    )
-    assert artifacts["trailing_silence_ms"] < MAX_TRAILING_SILENCE_MS, (
-        f"[{case_name}] Excessive trailing silence: {artifacts['trailing_silence_ms']:.0f}ms"
-    )
-    assert artifacts["silence_ratio"] < MAX_SILENCE_RATIO, (
-        f"[{case_name}] Too much silence: {artifacts['silence_ratio']:.1%}"
+    _save_to_manifest(
+        manifest, output_dir, case_name, speaker, speaker_path,
+        text, enable_postproc, result[0], seed, duration_s,
+        gate_results, passed, generation_config,
     )
 
-    # --- Measurement (record and floor-check) ---
-    scores = score_dnsmos(audio, sr)
 
-    assert scores["dnsmos_sig"] >= MIN_DNSMOS_SIG, (
-        f"[{case_name}] DNSMOS SIG below hard floor: {scores['dnsmos_sig']:.2f} < {MIN_DNSMOS_SIG}"
-    )
-    assert scores["dnsmos_ovrl"] >= MIN_DNSMOS_OVRL, (
-        f"[{case_name}] DNSMOS OVRL below hard floor: {scores['dnsmos_ovrl']:.2f} < {MIN_DNSMOS_OVRL} — "
-        f"post-processing may be degrading quality"
-    )
-    assert scores["dnsmos_bak"] >= MIN_DNSMOS_BAK, (
-        f"[{case_name}] DNSMOS BAK below hard floor: {scores['dnsmos_bak']:.2f} < {MIN_DNSMOS_BAK}"
-    )
-
-    # Record all scores for regression tracking
-    _record_score(case_name, {
-        "text": case.text,
-        "enable_post_processing": case.enable_post_processing,
-        "duration_s": round(duration_s, 2),
-        **scores,
-        **artifacts,
-    })
+# --- GPU gate tests: vocalization tags (cicero only) ---
 
 
-def test_post_processing_impact(speaker_audio_path):
-    """Measure exact quality impact of the post-processing chain.
-
-    This test GENERATES audio both ways and records the delta.
-    It fails if post-processing degrades signal quality by more than 0.5 DNSMOS points.
-    """
-    from tests.audio_quality.scorers.custom_scorers import score_post_processing_delta
-
-    text = "Hello, how are you doing today?"
-
-    raw_result = _run_generate(text, speaker_audio_path, enable_post_processing=False)
-    proc_result = _run_generate(text, speaker_audio_path, enable_post_processing=True)
-
-    raw_audio, sr = _load_generated_audio(raw_result[0])
-    proc_audio, _ = _load_generated_audio(proc_result[0])
-
-    delta = score_post_processing_delta(raw_audio, proc_audio, sr)
-
-    # Gate: post-processing should not drastically change volume
-    assert abs(delta["rms_change_db"]) < 6.0, (
-        f"Post-processing changed RMS by {delta['rms_change_db']:+.1f}dB"
-    )
-
-    # Gate: post-processing should not hurt signal quality by more than 0.5 DNSMOS points
-    if delta["dnsmos_delta_sig"] is not None:
-        assert delta["dnsmos_delta_sig"] > -0.5, (
-            f"Post-processing hurt DNSMOS SIG by {delta['dnsmos_delta_sig']:+.2f} — "
-            f"investigate DSP chain"
-        )
-
-    # Record delta for tracking
-    _record_score("post_processing_delta", {
-        "text": text,
-        **delta,
-    })
-
-
-def test_speaker_similarity(speaker_audio_path, speaker_audio_array):
-    """Score voice cloning accuracy — similarity between reference and generated voice.
-
-    This is a MEASUREMENT test. The score is recorded for regression tracking.
-    It fails only if similarity drops below the hard floor (0.2 = clearly different voice).
-    """
-    from tests.audio_quality.suites.full_eval import FULL_EVAL_CASES
-    from tests.audio_quality.scorers.versa_scorer import score_speaker_similarity
-
-    case = next(c for c in FULL_EVAL_CASES if c.name == "basic_speech")
-
-    result = _run_generate(case.text, speaker_audio_path)
-    generated_audio, sr = _load_generated_audio(result[0])
-
-    sim = score_speaker_similarity(generated_audio, speaker_audio_array[0], sr, use_gpu=True)
-
-    assert sim["speaker_similarity"] >= MIN_SPEAKER_SIMILARITY, (
-        f"Speaker similarity below hard floor: {sim['speaker_similarity']:.3f} < {MIN_SPEAKER_SIMILARITY} — "
-        f"voice cloning may have failed entirely"
-    )
-
-    _record_score("speaker_similarity", {
-        "text": case.text,
-        "speaker": "cicero",
-        **sim,
-    })
-
-
-def test_intelligibility_wer(speaker_audio_path):
-    """Score word error rate — generated speech should be intelligible."""
-    from tests.audio_quality.suites.full_eval import FULL_EVAL_CASES
-    from tests.audio_quality.scorers.versa_scorer import score_wer
-
-    case = next(c for c in FULL_EVAL_CASES if c.name == "raw_tts_no_postproc")
-
-    result = _run_generate(
-        case.text, speaker_audio_path,
-        enable_post_processing=False,
-    )
-    audio, sr = _load_generated_audio(result[0])
-
-    wer_result = score_wer(audio, sr, case.reference_text, use_gpu=True)
-
-    assert wer_result["wer"] < MIN_WER_PASS, (
-        f"WER too high: {wer_result['wer']:.1%} — "
-        f"expected: '{wer_result['ref_text']}', "
-        f"got: '{wer_result['hyp_text']}'"
-    )
-
-    _record_score("intelligibility_wer", {
-        "text": case.text,
-        "reference_text": case.reference_text,
-        "wer": wer_result["wer"],
-        "cer": wer_result["cer"],
-        "hyp_text": wer_result["hyp_text"],
-    })
-
-
-@pytest.mark.parametrize("case_name", [
-    "vocalization_sighs",
-    "vocalization_gasps",
-    "vocalization_whispers",
-    "vocalization_screams",
-])
-def test_vocalization_generation(case_name, speaker_audio_path):
+@pytest.mark.parametrize("case_name,text", VOCALIZATION_CASES)
+def test_vocalization_generation(case_name, text, speaker_map, manifest, output_dir, generation_config):
     """Vocalization tags should produce non-silent, non-clipped audio."""
-    from tests.audio_quality.suites.full_eval import FULL_EVAL_CASES
-    from tests.audio_quality.scorers.custom_scorers import detect_silence_artifacts
+    if DEFAULT_SPEAKER not in speaker_map:
+        pytest.skip(f"Speaker file not found: {DEFAULT_SPEAKER}")
 
-    case = next(c for c in FULL_EVAL_CASES if c.name == case_name)
+    speaker_path = speaker_map[DEFAULT_SPEAKER]
 
-    result = _run_generate(case.text, speaker_audio_path)
+    result = _run_generate(text, speaker_path)
     audio, sr = _load_generated_audio(result[0])
     duration_s = len(audio) / sr
 
@@ -320,41 +211,49 @@ def test_vocalization_generation(case_name, speaker_audio_path):
     rms = float(np.sqrt(np.mean(audio ** 2)))
     assert rms > 0.001, f"[{case_name}] Vocalization audio is near-silent: RMS={rms:.6f}"
 
+    from tests.audio_quality.scorers.custom_scorers import detect_silence_artifacts
     artifacts = detect_silence_artifacts(audio, sr)
     assert artifacts["has_clipping"] is False, f"[{case_name}] Clipping in vocalization output"
 
-    _record_score(case_name, {
-        "text": case.text,
-        "duration_s": round(duration_s, 2),
+    gate_results = {
+        "has_clipping": artifacts["has_clipping"],
+        "trailing_silence_ms": round(artifacts["trailing_silence_ms"], 1),
+        "silence_ratio": round(artifacts["silence_ratio"], 3),
+        "peak_amplitude": round(artifacts["peak_amplitude"], 3),
         "rms": round(rms, 4),
-        **artifacts,
-    })
+    }
+
+    _save_to_manifest(
+        manifest, output_dir, case_name, DEFAULT_SPEAKER, speaker_path,
+        text, True, result[0], 42, duration_s,
+        gate_results, True, generation_config,
+    )
 
 
-def test_batch_no_degradation(speaker_audio_path):
-    """Sequential generations from same speaker should not degrade significantly."""
-    from tests.audio_quality.suites.full_eval import FULL_EVAL_CASES
-    from tests.audio_quality.scorers.custom_scorers import score_batch_degradation
+# --- GPU gate tests: batch degradation (cicero, 5 clips) ---
 
-    case = next(c for c in FULL_EVAL_CASES if c.name == "batch_degradation_5")
 
-    clips = []
-    for i in range(case.batch_count):
-        result = _run_generate(case.text, speaker_audio_path, seed=42 + i, randomize_seed=False)
+def test_batch_generation_gates(speaker_map, manifest, output_dir, generation_config):
+    """Sequential generations from same speaker should pass gates."""
+    if DEFAULT_SPEAKER not in speaker_map:
+        pytest.skip(f"Speaker file not found: {DEFAULT_SPEAKER}")
+
+    speaker_path = speaker_map[DEFAULT_SPEAKER]
+    text = "The weather is quite pleasant today."
+
+    for i in range(5):
+        result = _run_generate(text, speaker_path, seed=42 + i)
         audio, sr = _load_generated_audio(result[0])
-        clips.append(audio)
+        duration_s = len(audio) / sr
 
-    degradation = score_batch_degradation(clips, sr)
+        gate_results, passed, errors = _check_gates(audio, sr, f"batch_{i}", DEFAULT_SPEAKER)
 
-    assert degradation["rms_drift_db"] < 3.0, (
-        f"RMS drift across {case.batch_count} generations: {degradation['rms_drift_db']:.1f}dB"
-    )
-    assert degradation["duration_drift_pct"] < 30.0, (
-        f"Duration drift across {case.batch_count} generations: {degradation['duration_drift_pct']:.1f}%"
-    )
+        assert passed, (
+            f"[batch_{i}/{DEFAULT_SPEAKER}] Gate failures: {'; '.join(errors)}"
+        )
 
-    _record_score("batch_degradation", {
-        "text": case.text,
-        "num_clips": case.batch_count,
-        **degradation,
-    })
+        _save_to_manifest(
+            manifest, output_dir, f"batch_{i}", DEFAULT_SPEAKER, speaker_path,
+            text, True, result[0], 42 + i, duration_s,
+            gate_results, passed, generation_config,
+        )
