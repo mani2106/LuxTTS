@@ -15,7 +15,6 @@ Run with:
 
 import asyncio
 import shutil
-from pathlib import Path
 
 import librosa
 import numpy as np

@@ -18,7 +18,6 @@
 This script provides utility functions for working with TensorRT in ZipVoice.
 """
 
-import logging
 import os
 import queue
 from typing import Any, Tuple, Optional
@@ -134,7 +133,7 @@ def load_trt(model: nn.Module, trt_model: str, trt_concurrent: int = 1):
         trt_model (str): The path to the TensorRT engine file.
         trt_concurrent (int, optional): The number of concurrent contexts. Defaults to 1.
     """
-    assert os.path.exists(trt_model), f"Please export trt model first."
+    assert os.path.exists(trt_model), "Please export trt model first."
     import tensorrt as trt
     with open(trt_model, 'rb') as f:
         estimator_engine = trt.Runtime(trt.Logger(trt.Logger.INFO)).deserialize_cuda_engine(f.read())

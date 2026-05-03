@@ -8,7 +8,6 @@ Provides thin wrappers around VERSA's Python API for:
 """
 
 import logging
-from typing import Optional
 
 import numpy as np
 

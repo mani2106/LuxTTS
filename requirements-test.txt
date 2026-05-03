@@ -14,3 +14,4 @@ pytest-xdist
 
 # Reporting
 jinja2
+fadtk

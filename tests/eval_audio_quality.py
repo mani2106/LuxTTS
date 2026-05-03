@@ -18,6 +18,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import numpy as np
+
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from tests.audio_quality.scorers.scorer_registry import ScoreResult, results_to_json
@@ -60,8 +62,8 @@ def cmd_score(skip_similarity=False):
         print("ERROR: Manifest is empty. No audio to score.")
         sys.exit(1)
 
-    print(f"SCORING RESULTS")
-    print(f"=" * 70)
+    print("SCORING RESULTS")
+    print("=" * 70)
     print(f"Scoring {len(manifest)} audio samples...\n")
 
     results = []
@@ -129,13 +131,13 @@ def cmd_score(skip_similarity=False):
     BASELINES_DIR.mkdir(parents=True, exist_ok=True)
     results_to_json(results, str(LATEST_SCORES_PATH))
     print(f"\nScores saved to {LATEST_SCORES_PATH}")
-    print(f"Next: python tests/eval_audio_quality.py compare")
+    print("Next: python tests/eval_audio_quality.py compare")
 
 
 def cmd_compare(baseline_name="master_baseline", threshold=5.0):
     """Compare latest scores against a stored baseline."""
     if not LATEST_SCORES_PATH.exists():
-        print(f"ERROR: No scores to compare. Run 'score' first.")
+        print("ERROR: No scores to compare. Run 'score' first.")
         sys.exit(1)
 
     baseline_path = BASELINES_DIR / f"{baseline_name}.json"
@@ -155,8 +157,8 @@ def cmd_compare(baseline_name="master_baseline", threshold=5.0):
     for entry in latest_data:
         current[entry["sample_name"]] = entry["scores"]
 
-    print(f"REGRESSION CHECK")
-    print(f"=" * 70)
+    print("REGRESSION CHECK")
+    print("=" * 70)
     print(f"Comparing {len(current)} samples against {baseline_name}")
     print(f"  Baseline: {baseline.get('version', '?')} (commit {baseline.get('commit', '?')}, {baseline.get('date', '?')})")
     print(f"  Threshold: {threshold}%\n")
@@ -192,7 +194,7 @@ def cmd_compare(baseline_name="master_baseline", threshold=5.0):
 def cmd_save_baseline(name):
     """Save current scores as a named baseline with full reproducibility metadata."""
     if not LATEST_SCORES_PATH.exists():
-        print(f"ERROR: No scores to save. Run 'score' first.")
+        print("ERROR: No scores to save. Run 'score' first.")
         sys.exit(1)
 
     with open(LATEST_SCORES_PATH, encoding="utf-8") as f:

@@ -6,7 +6,6 @@ Run: python build_exe.py
 """
 
 import PyInstaller.__main__
-from pathlib import Path
 
 
 def build():
@@ -57,7 +56,7 @@ def build():
     ])
 
     print("\n=== Build Complete ===")
-    print(f"Executable: dist/SkyrimNet-LuxTTS.exe")
+    print("Executable: dist/SkyrimNet-LuxTTS.exe")
     print("\nTo distribute:")
     print("1. Copy dist/SkyrimNet-LuxTTS.exe to your distribution folder")
     print("2. Include the speakers/ directory with preset voices")

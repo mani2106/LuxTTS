@@ -9,10 +9,8 @@ These scorers handle domain-specific checks that VERSA doesn't cover:
 """
 
 import logging
-from typing import Optional
 
 import numpy as np
-from scipy import signal as scipy_signal
 
 logger = logging.getLogger(__name__)
 

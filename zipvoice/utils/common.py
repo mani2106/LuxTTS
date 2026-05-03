@@ -24,7 +24,7 @@ from torch.utils.tensorboard import SummaryWriter
 if hasattr(torch.amp, "GradScaler"):
     from torch.amp import GradScaler
 else:
-    from torch.cuda.amp import GradScaler
+    GradScaler = torch.cuda.amp.GradScaler
 
 Pathlike = Union[str, Path]
 

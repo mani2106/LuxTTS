@@ -203,3 +203,4 @@ speakers/
 # repowise API keys (local)
 .repowise/.env
 .repowise/
+tests/audio_quality/output/

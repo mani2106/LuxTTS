@@ -1,6 +1,5 @@
 """Tests for cache utilities."""
 
-import pytest
 import tempfile
 from pathlib import Path
 import torch

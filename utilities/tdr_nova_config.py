@@ -13,9 +13,8 @@ Parameter mapping (discovered via pedalboard introspection):
 
 import logging
 import math
-from typing import Dict, Optional
+from typing import Dict
 
-import numpy as np
 
 logger = logging.getLogger(__name__)
 
