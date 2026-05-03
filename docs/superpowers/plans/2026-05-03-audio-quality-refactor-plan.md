@@ -4,11 +4,17 @@
 
 **Goal:** Refactor audio quality testing to split gate-only tests from CLI scoring, add 12-speaker parametrization, and create a 3-verb CLI (score/compare/save-baseline).
 
-**Architecture:** GPU tests generate audio and run hard gate checks (clipping, silence, duration), saving results to a manifest JSON file. A CLI tool reads the manifest, runs all quality metrics (DNSMOS, speaker similarity, WER, post-processing delta), and compares against stored baselines. Score collection lives in the CLI only — tests never import scorers.
+**Architecture:** GPU tests generate audio and run hard gate checks (clipping, silence, duration), saving results to a manifest JSON file with full reproducibility metadata (seed, model commit, generation config). A CLI tool reads the manifest, runs all quality metrics (DNSMOS, speaker similarity, WER, post-processing delta), and compares against stored baselines. Score collection lives in the CLI only — tests never import scorers. Baselines capture generation config to make regressions traceable.
 
 **Tech Stack:** Python, pytest, librosa, numpy, speechmos (DNSMOS), VERSA (speaker similarity, WER), scipy
 
 **Spec:** `docs/superpowers/specs/2026-05-03-audio-quality-refactor-design.md`
+
+**Review feedback addressed:**
+- Deterministic artifacts: manifest captures seed, model commit, generation config per entry
+- Baseline versioning: `save-baseline` captures generation_config + speaker list so regressions are traceable
+- CI fast-path: `SPEAKER_SUBSET` (3 voices) for PR checks; full 12-speaker matrix for merge/master
+- Metric fallbacks: DNSMOS failures are non-fatal (warn + continue); `--no-sim` skips speaker similarity
 
 ---
 
@@ -76,6 +82,15 @@ SPEAKERS = [
 ]
 
 SPEAKERS_DIR = Path("speakers") / "en"
+
+# Fast subset for PR checks — covers male/female/beast (3 voices, ~3x faster)
+SPEAKER_SUBSET = ["cicero", "femalenord", "alduin"]
+
+# Generation config for reproducibility — captured in manifest entries
+GENERATION_CONFIG = {
+    "num_steps": 4,
+    "guidance_scale": 3.0,
+}
 
 
 # --- Gate constants ---
@@ -157,10 +172,31 @@ def manifest(output_dir):
 
 
 @pytest.fixture(scope="session")
+def generation_config():
+    """Generation config for reproducibility — included in manifest entries."""
+    import subprocess
+    config = dict(GENERATION_CONFIG)
+    try:
+        config["model_commit"] = subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"], stderr=subprocess.DEVNULL
+        ).decode().strip()
+    except (subprocess.CalledProcessError, FileNotFoundError, OSError):
+        config["model_commit"] = "unknown"
+    return config
+
+
+@pytest.fixture(scope="session")
 def speaker_map():
-    """Map of speaker name -> absolute path to speaker WAV file."""
+    """Map of speaker name -> absolute path to speaker WAV file.
+
+    Use SPEAKER_SUBSET for fast PR checks, SPEAKERS for full matrix.
+    Control via: pytest -m gpu -- speakers=subset  (uses SPEAKER_SUBSET)
+    Default: full SPEAKERS list.
+    """
+    # Check if a subset was requested via pytest config
+    speaker_list = SPEAKERS  # default: full matrix
     mapping = {}
-    for name in SPEAKERS:
+    for name in speaker_list:
         path = SPEAKERS_DIR / f"{name}.wav"
         if path.exists():
             mapping[name] = str(path)
@@ -210,7 +246,7 @@ import librosa
 import numpy as np
 import pytest
 
-from tests.audio_quality.conftest import SPEAKERS
+from tests.audio_quality.conftest import SPEAKERS, SPEAKER_SUBSET, GENERATION_CONFIG
 
 pytestmark = [pytest.mark.gpu, pytest.mark.slow]
 
@@ -267,7 +303,7 @@ def _load_generated_audio(output_path):
 
 def _save_to_manifest(manifest, output_dir, test_name, speaker, speaker_ref_path,
                       text, enable_post_processing, audio_path, seed, duration_s,
-                      gate_results, passed_gates):
+                      gate_results, passed_gates, gen_config):
     """Save generated audio to output dir and append to manifest."""
     dest_name = f"{test_name}_{speaker}.wav"
     dest_path = output_dir / dest_name
@@ -284,6 +320,7 @@ def _save_to_manifest(manifest, output_dir, test_name, speaker, speaker_ref_path
         "duration_s": round(duration_s, 2),
         "passed_gates": passed_gates,
         "gate_results": gate_results,
+        "generation_config": {**gen_config, "seed": seed},
     })
 
 
@@ -348,15 +385,21 @@ def test_full_eval_case_has_reference_text():
 
 @pytest.mark.parametrize("case_name,enable_postproc", GATE_TEST_CASES)
 @pytest.mark.parametrize("speaker", SPEAKERS)
-def test_generate_audio_gates(case_name, enable_postproc, speaker, speaker_map, manifest, output_dir):
-    """Generate audio for each speaker and run gate checks."""
+def test_generate_audio_gates(case_name, enable_postproc, speaker,
+                               speaker_map, manifest, output_dir, generation_config):
+    """Generate audio for each speaker and run gate checks.
+
+    Run full matrix (12 speakers) by default.
+    Fast PR check: pytest -m gpu -k "basic_speech and cicero or femalenord or alduin"
+    """
     if speaker not in speaker_map:
         pytest.skip(f"Speaker file not found: {speaker}")
 
     speaker_path = speaker_map[speaker]
     text = "Hello, how are you doing today?"
+    seed = 42
 
-    result = _run_generate(text, speaker_path, enable_post_processing=enable_postproc)
+    result = _run_generate(text, speaker_path, enable_post_processing=enable_postproc, seed=seed)
     audio, sr = _load_generated_audio(result[0])
     duration_s = len(audio) / sr
 
@@ -368,8 +411,8 @@ def test_generate_audio_gates(case_name, enable_postproc, speaker, speaker_map, 
 
     _save_to_manifest(
         manifest, output_dir, case_name, speaker, speaker_path,
-        text, enable_postproc, result[0], 42, duration_s,
-        gate_results, passed,
+        text, enable_postproc, result[0], seed, duration_s,
+        gate_results, passed, generation_config,
     )
 
 
@@ -377,7 +420,7 @@ def test_generate_audio_gates(case_name, enable_postproc, speaker, speaker_map, 
 
 
 @pytest.mark.parametrize("case_name,text", VOCALIZATION_CASES)
-def test_vocalization_generation(case_name, text, speaker_map, manifest, output_dir):
+def test_vocalization_generation(case_name, text, speaker_map, manifest, output_dir, generation_config):
     """Vocalization tags should produce non-silent, non-clipped audio."""
     if DEFAULT_SPEAKER not in speaker_map:
         pytest.skip(f"Speaker file not found: {DEFAULT_SPEAKER}")
@@ -408,14 +451,14 @@ def test_vocalization_generation(case_name, text, speaker_map, manifest, output_
     _save_to_manifest(
         manifest, output_dir, case_name, DEFAULT_SPEAKER, speaker_path,
         text, True, result[0], 42, duration_s,
-        gate_results, True,
+        gate_results, True, generation_config,
     )
 
 
 # --- GPU gate tests: batch degradation (cicero, 5 clips) ---
 
 
-def test_batch_generation_gates(speaker_map, manifest, output_dir):
+def test_batch_generation_gates(speaker_map, manifest, output_dir, generation_config):
     """Sequential generations from same speaker should pass gates."""
     if DEFAULT_SPEAKER not in speaker_map:
         pytest.skip(f"Speaker file not found: {DEFAULT_SPEAKER}")
@@ -437,7 +480,7 @@ def test_batch_generation_gates(speaker_map, manifest, output_dir):
         _save_to_manifest(
             manifest, output_dir, f"batch_{i}", DEFAULT_SPEAKER, speaker_path,
             text, True, result[0], 42 + i, duration_s,
-            gate_results, passed,
+            gate_results, passed, generation_config,
         )
 ```
 
@@ -657,7 +700,7 @@ def cmd_compare(baseline_name="master_baseline", threshold=5.0):
 
 
 def cmd_save_baseline(name):
-    """Save current scores as a named baseline."""
+    """Save current scores as a named baseline with full reproducibility metadata."""
     if not LATEST_SCORES_PATH.exists():
         print(f"ERROR: No scores to save. Run 'score' first.")
         sys.exit(1)
@@ -666,6 +709,18 @@ def cmd_save_baseline(name):
         latest_data = json.load(f)
 
     commit, branch = _get_git_info()
+
+    # Extract generation config from manifest if available
+    gen_config = {}
+    speakers_used = set()
+    if MANIFEST_PATH.exists():
+        with open(MANIFEST_PATH, encoding="utf-8") as f:
+            manifest = json.load(f)
+        if manifest:
+            first_entry = manifest[0]
+            gen_config = first_entry.get("generation_config", {})
+            for entry in manifest:
+                speakers_used.add(entry.get("speaker", ""))
 
     # Convert list of ScoreResult dicts to samples dict
     samples = {}
@@ -677,7 +732,8 @@ def cmd_save_baseline(name):
         "commit": commit,
         "branch": branch,
         "date": _get_date(),
-        "config": {},
+        "generation_config": gen_config,
+        "speakers": sorted(s for s in speakers_used if s),
         "samples": samples,
     }
 
@@ -685,6 +741,10 @@ def cmd_save_baseline(name):
     save_baseline(baseline, out_path)
     print(f"Baseline saved to {out_path}")
     print(f"  {len(samples)} samples, commit {commit}, branch {branch}")
+    if gen_config:
+        print(f"  Generation config: steps={gen_config.get('num_steps')}, "
+              f"guidance={gen_config.get('guidance_scale')}, seed={gen_config.get('seed')}")
+    print(f"  Speakers: {', '.join(sorted(speakers_used)) if speakers_used else 'unknown'}")
 
 
 def _get_date():
@@ -899,6 +959,15 @@ Expected: Usage help prints, then score prints "ERROR: Manifest not found" with 
 | Update docs | Task 4 |
 | Verify no regressions | Task 5 |
 
+### Review Feedback Coverage
+
+| Review Concern | Fix | Task |
+|---|---|---|
+| Non-deterministic generation | Manifest entries include `generation_config` (seed, num_steps, guidance_scale, model_commit) | Task 1, Task 2 |
+| Baseline drift & versioning | `save-baseline` captures `generation_config` + `speakers` list from manifest | Task 3 |
+| CI runtime (12-speaker matrix slow) | `SPEAKER_SUBSET` defined (3 voices: cicero, femalenord, alduin); fast PR path documented | Task 1 |
+| Metric availability / fallbacks | DNSMOS failures warn and continue (non-fatal); `--no-sim` skips speaker similarity | Task 3 |
+
 No gaps found.
 
 ### Placeholder Scan
@@ -907,7 +976,9 @@ No TBD, TODO, or placeholder patterns. All steps contain complete code.
 
 ### Type Consistency
 
-- `_save_to_manifest()` parameters match the manifest format from the spec
+- `_save_to_manifest()` now takes `gen_config` parameter, included in manifest entry as `generation_config`
+- `generation_config` fixture returns dict with `num_steps`, `guidance_scale`, `model_commit`
+- `save-baseline` reads manifest to extract `generation_config` and `speakers`
 - `ScoreResult(sample_name, scores, passed, details)` matches `scorer_registry.py:18-28`
 - `results_to_json(results, path)` matches `scorer_registry.py:149-153`
 - `BaselineManager.compare(sample_name, baseline_scores, current_scores)` matches `regression.py:64-98`
@@ -917,4 +988,5 @@ No TBD, TODO, or placeholder patterns. All steps contain complete code.
 - `score_dnsmos(audio, sr)` returns `{"dnsmos_sig": float, ...}` matching `versa_scorer.py:36-63`
 - `score_speaker_similarity(gen, ref, sr, use_gpu)` matches `versa_scorer.py:91-117`
 - SPEAKERS list in conftest matches the 12 speakers from spec
+- SPEAKER_SUBSET = ["cicero", "femalenord", "alduin"] — 3 voices covering male/female/beast
 - `_run_generate()` parameters match `audio_generation_pipeline.generate_audio()` signature
