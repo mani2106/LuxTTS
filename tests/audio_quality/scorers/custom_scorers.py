@@ -129,8 +129,8 @@ def score_post_processing_delta(
         proc_scores = score_dnsmos(processed_audio, sr)
         dnsmos_delta_sig = proc_scores["dnsmos_sig"] - raw_scores["dnsmos_sig"]
         dnsmos_delta_ovrl = proc_scores["dnsmos_ovrl"] - raw_scores["dnsmos_ovrl"]
-    except Exception:
-        logger.debug("DNSMOS not available for post-processing delta, skipping")
+    except (ImportError, RuntimeError) as e:
+        logger.debug("DNSMOS not available for post-processing delta: %s", e)
 
     return {
         "rms_change_db": rms_change_db,
@@ -183,8 +183,8 @@ def score_batch_degradation(
         first_scores = score_dnsmos(first, sr)
         last_scores = score_dnsmos(last, sr)
         dnsmos_drift = last_scores["dnsmos_ovrl"] - first_scores["dnsmos_ovrl"]
-    except Exception:
-        logger.debug("DNSMOS not available for batch degradation scoring")
+    except (ImportError, RuntimeError) as e:
+        logger.debug("DNSMOS not available for batch degradation scoring: %s", e)
 
     # Speaker similarity drift (GPU recommended)
     speaker_sim = None
@@ -192,8 +192,8 @@ def score_batch_degradation(
         from tests.audio_quality.scorers.versa_scorer import score_speaker_similarity
         result = score_speaker_similarity(last, first, sr, use_gpu=use_gpu)
         speaker_sim = result["speaker_similarity"]
-    except Exception:
-        logger.debug("Speaker similarity not available for batch degradation")
+    except (ImportError, RuntimeError) as e:
+        logger.debug("Speaker similarity not available for batch degradation: %s", e)
 
     return {
         "num_clips": len(audio_clips),

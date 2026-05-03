@@ -49,5 +49,5 @@ def load_baseline(name: str) -> dict:
     path = BASELINES_DIR / f"{name}.json"
     if not path.exists():
         pytest.skip(f"Baseline file not found: {path}")
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         return json.load(f)

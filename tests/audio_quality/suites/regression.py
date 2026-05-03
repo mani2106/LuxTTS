@@ -20,14 +20,14 @@ logger = logging.getLogger(__name__)
 
 def load_baseline(path: Path) -> dict:
     """Load a baseline JSON file."""
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         return json.load(f)
 
 
 def save_baseline(baseline: dict, path: Path):
     """Save a baseline JSON file."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w") as f:
+    with open(path, "w", encoding="utf-8") as f:
         json.dump(baseline, f, indent=2)
 
 

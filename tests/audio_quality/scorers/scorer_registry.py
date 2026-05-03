@@ -73,7 +73,9 @@ def compare_scores(
             continue
 
         delta = c - b
-        delta_pct = (delta / abs(b)) * 100 if b != 0 else 0.0
+        if abs(b) < 1e-10:
+            continue
+        delta_pct = (delta / abs(b)) * 100
         regressed = delta_pct < -threshold_pct
 
         deltas[key] = {

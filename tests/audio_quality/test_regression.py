@@ -65,3 +65,27 @@ def test_baseline_manager_compare_all_pass():
 
     assert result["passed"] is True
     assert len(result["regressed_metrics"]) == 0
+
+
+def test_baseline_manager_compare_baseline_file_sample_not_found():
+    """When comparing a sample not in baseline, should return error result."""
+    manager = BaselineManager(regression_threshold_pct=5.0)
+
+    baseline = {
+        "version": "test-v1",
+        "commit": "abc",
+        "branch": "test",
+        "date": "2026-05-03",
+        "samples": {"other_sample": {"dnsmos_sig": 3.5}},
+    }
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path = Path(tmpdir) / "test.json"
+        save_baseline(baseline, path)
+
+        result = manager.compare_baseline_file(
+            path, {"missing_sample": {"dnsmos_sig": 3.0}}, "missing_sample"
+        )
+
+        assert result["passed"] is False
+        assert "not found in baseline" in result["details"]
