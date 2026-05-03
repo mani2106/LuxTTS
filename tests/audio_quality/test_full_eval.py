@@ -21,7 +21,7 @@ import librosa
 import numpy as np
 import pytest
 
-from tests.audio_quality.conftest import SPEAKERS, SPEAKER_SUBSET, GENERATION_CONFIG
+from tests.audio_quality.conftest import SPEAKERS
 
 pytestmark = [pytest.mark.gpu, pytest.mark.slow]
 

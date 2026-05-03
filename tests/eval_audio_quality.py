@@ -47,7 +47,6 @@ def _get_git_info():
 def cmd_score(skip_similarity=False):
     """Score all audio files listed in the manifest."""
     import librosa
-    import numpy as np
 
     if not MANIFEST_PATH.exists():
         print(f"ERROR: Manifest not found at {MANIFEST_PATH}")
@@ -93,7 +92,7 @@ def cmd_score(skip_similarity=False):
             if ref_path and Path(ref_path).exists():
                 try:
                     from tests.audio_quality.scorers.versa_scorer import score_speaker_similarity
-                    ref_audio, ref_sr = librosa.load(ref_path, sr=48000)
+                    ref_audio, _ = librosa.load(ref_path, sr=48000)
                     ref_audio = ref_audio.astype(np.float32)
                     sim = score_speaker_similarity(audio, ref_audio, sr, use_gpu=True)
                     scores["speaker_similarity"] = sim["speaker_similarity"]

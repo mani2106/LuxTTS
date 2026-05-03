@@ -130,14 +130,12 @@ def generation_config():
 
 @pytest.fixture(scope="session")
 def speaker_map():
-    """Map of speaker name -> absolute path to speaker WAV file.
+    """Map of speaker name -> path to speaker WAV file.
 
-    Use SPEAKER_SUBSET for fast PR checks, SPEAKERS for full matrix.
-    Control via: pytest -m gpu -- speakers=subset  (uses SPEAKER_SUBSET)
-    Default: full SPEAKERS list.
+    Uses full SPEAKERS list by default.
+    Fast PR check: pytest -m gpu -k "cicero or femalenord or alduin"
     """
-    # Check if a subset was requested via pytest config
-    speaker_list = SPEAKERS  # default: full matrix
+    speaker_list = SPEAKERS
     mapping = {}
     for name in speaker_list:
         path = SPEAKERS_DIR / f"{name}.wav"
