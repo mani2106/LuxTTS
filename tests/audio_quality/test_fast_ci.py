@@ -101,3 +101,56 @@ def test_post_processing_delta_detects_change(sample_48k_speech):
     assert "rms_change_db" in result
     # Modified audio should show some change
     assert result["rms_change_db"] != 0.0
+
+
+from tests.audio_quality.scorers.scorer_registry import (
+    ScoreResult,
+    format_report,
+    compare_scores,
+)
+
+
+def test_score_result_format():
+    """ScoreResult should produce agent-parseable dict output."""
+    result = ScoreResult(
+        sample_name="hello_world",
+        scores={"dnsmos_sig": 3.92, "dnsmos_ovrl": 3.78},
+        passed=True,
+        details="All metrics within acceptable range.",
+    )
+    d = result.to_dict()
+
+    assert d["sample_name"] == "hello_world"
+    assert d["passed"] is True
+    assert "dnsmos_sig" in d["scores"]
+    assert d["details"] == "All metrics within acceptable range."
+
+
+def test_format_report_produces_readable_output():
+    """format_report should produce human + agent readable text."""
+    results = [
+        ScoreResult("test1", {"dnsmos_sig": 3.5}, True, "OK"),
+        ScoreResult("test2", {"dnsmos_sig": 2.0}, False, "DNSMOS SIG dropped below threshold: 2.0 < 3.0"),
+    ]
+    report = format_report(results)
+
+    assert "test1" in report
+    assert "test2" in report
+    assert "PASS" in report
+    assert "FAIL" in report
+    assert "2.0 < 3.0" in report
+
+
+def test_compare_scores_detects_regression():
+    """compare_scores should flag when a metric drops below threshold."""
+    baseline = {"dnsmos_sig": 3.92, "dnsmos_ovrl": 3.78}
+    current = {"dnsmos_sig": 3.40, "dnsmos_ovrl": 3.80}
+
+    deltas = compare_scores(baseline, current, threshold_pct=5.0)
+
+    # dnsmos_sig dropped ~13% — should be flagged
+    assert deltas["dnsmos_sig"]["regressed"] is True
+    assert deltas["dnsmos_sig"]["delta_pct"] < -5.0
+
+    # dnsmos_ovrl improved — should not be flagged
+    assert deltas["dnsmos_ovrl"]["regressed"] is False
