@@ -1,5 +1,5 @@
 # VERSA evaluation toolkit (UTMOS, DNSMOS, speaker similarity, WER)
-git+https://github.com/wavlab-speech/versa.git#egg=versa-speech-audio-toolkit --no-build-isolation
+versa-speech-audio-toolkit @ git+https://github.com/wavlab-speech/versa.git
 
 # Audio I/O
 soundfile
