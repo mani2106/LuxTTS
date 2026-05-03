@@ -128,7 +128,7 @@ def build_interface(config: AppConfig) -> gr.Blocks:
                         minimum=0.0,
                         maximum=1.0,
                         step=0.1,
-                        value=1.0,
+                        value=config.default_eq_intensity,
                     )
 
                     de_ess_intensity = gr.Slider(
@@ -136,7 +136,7 @@ def build_interface(config: AppConfig) -> gr.Blocks:
                         minimum=0.0,
                         maximum=1.0,
                         step=0.1,
-                        value=0.5,
+                        value=config.default_de_ess_intensity,
                     )
 
                     compressor_threshold = gr.Slider(
@@ -144,7 +144,7 @@ def build_interface(config: AppConfig) -> gr.Blocks:
                         minimum=-30.0,
                         maximum=0.0,
                         step=1.0,
-                        value=-6.0,
+                        value=config.default_compressor_threshold_offset,
                     )
 
                     compressor_ratio = gr.Slider(
@@ -152,7 +152,7 @@ def build_interface(config: AppConfig) -> gr.Blocks:
                         minimum=1.0,
                         maximum=20.0,
                         step=0.5,
-                        value=4.0,
+                        value=config.default_compressor_ratio,
                     )
 
                     compressor_knee = gr.Slider(
@@ -160,7 +160,7 @@ def build_interface(config: AppConfig) -> gr.Blocks:
                         minimum=0.0,
                         maximum=12.0,
                         step=1.0,
-                        value=4.0,
+                        value=config.default_compressor_knee_db,
                     )
 
                     target_loudness = gr.Slider(
@@ -168,7 +168,7 @@ def build_interface(config: AppConfig) -> gr.Blocks:
                         minimum=-30.0,
                         maximum=-5.0,
                         step=1.0,
-                        value=-16.0,
+                        value=config.default_target_loudness_lufs,
                     )
 
                     save_raw_for_ab = gr.Checkbox(

@@ -47,8 +47,17 @@ class LuxTTSConfig:
 def process_audio(audio, transcriber, tokenizer, feature_extractor, device, target_rms=0.1, duration=4, feat_scale=0.1):
     prompt_wav, sr = librosa.load(audio, sr=24000, duration=duration)
     prompt_wav2, sr = librosa.load(audio, sr=16000, duration=duration)
+
+    # Transcribe BEFORE trimming so Whisper sees full, unaltered audio
     prompt_text = transcriber(prompt_wav2)["text"]
     print(prompt_text)
+
+    # Trim silence from feature extraction audio only to prevent prompt leaking
+    prompt_wav, _ = librosa.effects.trim(prompt_wav, top_db=30)
+
+    # Add 200ms trailing silence to seal prompt boundary
+    trail_samples = int(0.2 * sr)
+    prompt_wav = np.append(prompt_wav, np.zeros(trail_samples, dtype=np.float32))
 
     prompt_wav = torch.from_numpy(prompt_wav).unsqueeze(0)
     prompt_wav, prompt_rms = rms_norm(prompt_wav, target_rms)
