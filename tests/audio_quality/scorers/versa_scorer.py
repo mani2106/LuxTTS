@@ -51,14 +51,11 @@ def score_dnsmos(audio: np.ndarray, sr: int) -> dict:
 
     result = dnsmos.run(audio_16k, 16000)
 
+    key_map = {"sig_mos": "dnsmos_sig", "bak_mos": "dnsmos_bak", "ovrl_mos": "dnsmos_ovrl"}
     scores = {}
-    for item in result:
-        if "SIG" in item:
-            scores["dnsmos_sig"] = float(item["SIG"])
-        if "BAK" in item:
-            scores["dnsmos_bak"] = float(item["BAK"])
-        if "OVRL" in item:
-            scores["dnsmos_ovrl"] = float(item["OVRL"])
+    for src_key, dst_key in key_map.items():
+        if src_key in result:
+            scores[dst_key] = float(result[src_key])
 
     if not scores:
         raise ValueError(f"DNSMOS returned unexpected format: {result}")
