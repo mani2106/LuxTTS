@@ -1,147 +1,276 @@
-"""CLI runner for audio quality evaluation.
+"""LuxTTS Audio Quality Evaluation CLI.
 
-Usage:
-    python tests/eval_audio_quality.py --generate-baselines   # Create/update baseline
-    python tests/eval_audio_quality.py --compare-baselines     # Compare current vs baseline
-    python tests/eval_audio_quality.py --report                # Full JSON report
-    python tests/eval_audio_quality.py --list-cases            # List all test cases
+Three commands for agent-driven quality analysis:
+    python tests/eval_audio_quality.py score              # Score all audio in manifest
+    python tests/eval_audio_quality.py score --no-sim     # Skip speaker similarity (faster)
+    python tests/eval_audio_quality.py compare            # Compare scores to baseline
+    python tests/eval_audio_quality.py save-baseline NAME # Save current scores as baseline
+
+Workflow:
+    1. pytest tests/audio_quality/ -m gpu              # Generate audio, run gates
+    2. python tests/eval_audio_quality.py score         # Score generated audio
+    3. python tests/eval_audio_quality.py compare       # Compare against baseline
+    4. python tests/eval_audio_quality.py save-baseline master_v2  # If scores improved
 """
 
-import argparse
 import json
+import subprocess
 import sys
 from pathlib import Path
 
-# Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from tests.audio_quality.suites.fast_ci import FAST_CI_CASES
-from tests.audio_quality.suites.full_eval import FULL_EVAL_CASES
-from tests.audio_quality.suites.regression import BaselineManager, create_baseline, load_baseline, save_baseline
-from tests.audio_quality.scorers.scorer_registry import ScoreResult, format_report, results_to_json
+from tests.audio_quality.scorers.scorer_registry import ScoreResult, results_to_json
+from tests.audio_quality.suites.regression import BaselineManager, load_baseline, save_baseline
 
 BASELINES_DIR = Path(__file__).parent / "audio_quality" / "baselines"
+OUTPUT_DIR = Path(__file__).parent / "audio_quality" / "output"
+MANIFEST_PATH = OUTPUT_DIR / "manifest.json"
+LATEST_SCORES_PATH = BASELINES_DIR / "latest_scores.json"
 
 
-def list_cases():
-    """List all test cases across all tiers."""
-    print("\n=== Tier 1: Fast CI (CPU) ===")
-    for case in FAST_CI_CASES:
-        tags = []
-        if case.has_vocalization_tags:
-            tags.append("vocalization")
-        if case.is_batch:
-            tags.append(f"batchx{case.batch_count}")
-        tag_str = f" [{', '.join(tags)}]" if tags else ""
-        print(f"  {case.name}: {case.description}{tag_str}")
-        print(f"    Text: \"{case.text[:60]}{'...' if len(case.text) > 60 else ''}\"")
-
-    print("\n=== Tier 2: Full Eval (GPU) ===")
-    for case in FULL_EVAL_CASES:
-        tags = []
-        if not case.enable_post_processing:
-            tags.append("no-postproc")
-        if case.has_vocalization_tags:
-            tags.append("vocalization")
-        if case.is_batch:
-            tags.append(f"batchx{case.batch_count}")
-        tag_str = f" [{', '.join(tags)}]" if tags else ""
-        print(f"  {case.name}: {case.description}{tag_str}")
-        print(f"    Text: \"{case.text[:60]}{'...' if len(case.text) > 60 else ''}\"")
+def _get_git_info():
+    """Get current commit and branch."""
+    try:
+        commit = subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"], stderr=subprocess.DEVNULL
+        ).decode().strip()
+        branch = subprocess.check_output(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"], stderr=subprocess.DEVNULL
+        ).decode().strip()
+    except (subprocess.CalledProcessError, FileNotFoundError, OSError):
+        commit = "unknown"
+        branch = "unknown"
+    return commit, branch
 
 
-def compare_baselines(baseline_name: str = "master_baseline", threshold: float = 5.0):
-    """Compare current results against a stored baseline."""
+def cmd_score(skip_similarity=False):
+    """Score all audio files listed in the manifest."""
+    import librosa
+    import numpy as np
+
+    if not MANIFEST_PATH.exists():
+        print(f"ERROR: Manifest not found at {MANIFEST_PATH}")
+        print("Run GPU tests first: pytest tests/audio_quality/ -m gpu")
+        sys.exit(1)
+
+    with open(MANIFEST_PATH, encoding="utf-8") as f:
+        manifest = json.load(f)
+
+    if not manifest:
+        print("ERROR: Manifest is empty. No audio to score.")
+        sys.exit(1)
+
+    print(f"SCORING RESULTS")
+    print(f"=" * 70)
+    print(f"Scoring {len(manifest)} audio samples...\n")
+
+    results = []
+
+    for entry in manifest:
+        sample_name = f"{entry['test_name']}_{entry['speaker']}"
+        audio_path = Path(entry["audio_path"])
+
+        if not audio_path.exists():
+            print(f"  SKIP {sample_name}: audio file not found at {audio_path}")
+            continue
+
+        audio, sr = librosa.load(str(audio_path), sr=48000)
+        audio = audio.astype(np.float32)
+        scores = {}
+
+        # DNSMOS (CPU, always available)
+        try:
+            from tests.audio_quality.scorers.versa_scorer import score_dnsmos
+            dnsmos = score_dnsmos(audio, sr)
+            scores.update(dnsmos)
+        except (ImportError, RuntimeError) as e:
+            print(f"  WARN: DNSMOS unavailable for {sample_name}: {e}")
+
+        # Speaker similarity (GPU recommended)
+        if not skip_similarity:
+            ref_path = entry.get("speaker_ref_path")
+            if ref_path and Path(ref_path).exists():
+                try:
+                    from tests.audio_quality.scorers.versa_scorer import score_speaker_similarity
+                    ref_audio, ref_sr = librosa.load(ref_path, sr=48000)
+                    ref_audio = ref_audio.astype(np.float32)
+                    sim = score_speaker_similarity(audio, ref_audio, sr, use_gpu=True)
+                    scores["speaker_similarity"] = sim["speaker_similarity"]
+                except (ImportError, RuntimeError) as e:
+                    print(f"  WARN: Speaker similarity unavailable for {sample_name}: {e}")
+
+        # Silence artifacts
+        try:
+            from tests.audio_quality.scorers.custom_scorers import detect_silence_artifacts
+            artifacts = detect_silence_artifacts(audio, sr)
+            scores["trailing_silence_ms"] = artifacts["trailing_silence_ms"]
+            scores["silence_ratio"] = artifacts["silence_ratio"]
+            scores["peak_amplitude"] = artifacts["peak_amplitude"]
+        except ImportError:
+            pass
+
+        scores["duration_s"] = entry["duration_s"]
+
+        # Format console output
+        sig = scores.get("dnsmos_sig", 0)
+        bak = scores.get("dnsmos_bak", 0)
+        ovrl = scores.get("dnsmos_ovrl", 0)
+        sim_str = f"SIM={scores.get('speaker_similarity', 0):.2f}" if "speaker_similarity" in scores else "SIM=N/A"
+        print(f"  {sample_name:40s} SIG={sig:.2f} BAK={bak:.2f} OVRL={ovrl:.2f}  {sim_str}")
+
+        results.append(ScoreResult(
+            sample_name=sample_name,
+            scores=scores,
+            passed=True,
+            details="Scored successfully.",
+        ))
+
+    # Save results
+    BASELINES_DIR.mkdir(parents=True, exist_ok=True)
+    results_to_json(results, str(LATEST_SCORES_PATH))
+    print(f"\nScores saved to {LATEST_SCORES_PATH}")
+    print(f"Next: python tests/eval_audio_quality.py compare")
+
+
+def cmd_compare(baseline_name="master_baseline", threshold=5.0):
+    """Compare latest scores against a stored baseline."""
+    if not LATEST_SCORES_PATH.exists():
+        print(f"ERROR: No scores to compare. Run 'score' first.")
+        sys.exit(1)
+
     baseline_path = BASELINES_DIR / f"{baseline_name}.json"
     if not baseline_path.exists():
         print(f"ERROR: Baseline not found: {baseline_path}")
-        print(f"Run --generate-baselines first.")
+        print(f"Run 'save-baseline {baseline_name}' to create one.")
         sys.exit(1)
 
+    with open(LATEST_SCORES_PATH, encoding="utf-8") as f:
+        latest_data = json.load(f)
+
     baseline = load_baseline(baseline_path)
-    print(f"Loaded baseline: {baseline['version']} (commit {baseline['commit']}, {baseline['date']})")
-    print(f"Contains {len(baseline['samples'])} sample(s)")
+    baseline_samples = baseline.get("samples", {})
+
+    # Build current scores dict: sample_name -> scores
+    current = {}
+    for entry in latest_data:
+        current[entry["sample_name"]] = entry["scores"]
+
+    print(f"REGRESSION CHECK")
+    print(f"=" * 70)
+    print(f"Comparing {len(current)} samples against {baseline_name}")
+    print(f"  Baseline: {baseline.get('version', '?')} (commit {baseline.get('commit', '?')}, {baseline.get('date', '?')})")
+    print(f"  Threshold: {threshold}%\n")
 
     manager = BaselineManager(regression_threshold_pct=threshold)
+    all_results = []
+    any_regressed = False
 
-    print(f"\nComparing with {threshold}% regression threshold...")
-    print("(Note: This compares stored scores. For fresh generation, use Tier 2 tests.)\n")
+    for sample_name, scores in current.items():
+        if sample_name not in baseline_samples:
+            print(f"  NEW  {sample_name} (not in baseline)")
+            continue
 
-    # For now, just display the baseline scores
-    for name, scores in baseline["samples"].items():
-        print(f"  {name}:")
-        for metric, value in scores.items():
-            if isinstance(value, (int, float)):
-                print(f"    {metric}: {value:.3f}")
-            else:
-                print(f"    {metric}: {value}")
+        result = manager.compare(sample_name, baseline_samples[sample_name], scores)
+        all_results.append(result)
 
-    print(f"\nTo compare against current output, run:")
-    print(f"  pytest tests/audio_quality/test_full_eval.py -v -m gpu")
+        if result["passed"]:
+            print(f"  PASS {sample_name}")
+        else:
+            any_regressed = True
+            print(f"  FAIL {sample_name}")
+            for line in result["details"].split("\n"):
+                print(f"       {line}")
+
+    total = len(all_results)
+    passed = sum(1 for r in all_results if r["passed"])
+    print(f"\n{passed}/{total} samples within {threshold}% of baseline")
+
+    if any_regressed:
+        sys.exit(1)
 
 
-def generate_baselines(
-    version: str = "v1",
-    baseline_name: str = "master_baseline",
-):
-    """Generate a baseline file from current test results."""
-    import subprocess
+def cmd_save_baseline(name):
+    """Save current scores as a named baseline with full reproducibility metadata."""
+    if not LATEST_SCORES_PATH.exists():
+        print(f"ERROR: No scores to save. Run 'score' first.")
+        sys.exit(1)
 
-    # Get current commit
-    try:
-        commit = subprocess.check_output(["git", "rev-parse", "--short", "HEAD"]).decode().strip()
-        branch = subprocess.check_output(["git", "rev-parse", "--abbrev-ref", "HEAD"]).decode().strip()
-    except Exception:
-        commit = "unknown"
-        branch = "unknown"
+    with open(LATEST_SCORES_PATH, encoding="utf-8") as f:
+        latest_data = json.load(f)
 
-    print(f"Generating baseline: {baseline_name}")
-    print(f"Version: {version}")
-    print(f"Commit: {commit}")
-    print(f"Branch: {branch}")
-    print()
-    print("To generate baselines with actual scores:")
-    print("  1. Run: pytest tests/audio_quality/test_full_eval.py -v -m gpu --json-report")
-    print(f"  2. Pipe results to: python tests/eval_audio_quality.py --save-baselines < results.json")
-    print()
-    print("Or create an empty baseline template:")
-    template = create_baseline(
-        version=version,
-        commit=commit,
-        branch=branch,
-        config={
-            "enable_post_processing": False,
-            "num_steps": 4,
-            "guidance_scale": 3.0,
-        },
-        samples={},
-    )
+    commit, branch = _get_git_info()
 
-    out_path = BASELINES_DIR / f"{baseline_name}.json"
-    save_baseline(template, out_path)
-    print(f"  Created template: {out_path}")
-    print(f"  Fill in 'samples' with actual scores from Tier 2 evaluation.")
+    # Extract generation config from manifest if available
+    gen_config = {}
+    speakers_used = set()
+    if MANIFEST_PATH.exists():
+        with open(MANIFEST_PATH, encoding="utf-8") as f:
+            manifest = json.load(f)
+        if manifest:
+            first_entry = manifest[0]
+            gen_config = first_entry.get("generation_config", {})
+            for entry in manifest:
+                speakers_used.add(entry.get("speaker", ""))
+
+    # Convert list of ScoreResult dicts to samples dict
+    samples = {}
+    for entry in latest_data:
+        samples[entry["sample_name"]] = entry["scores"]
+
+    baseline = {
+        "version": f"{name}",
+        "commit": commit,
+        "branch": branch,
+        "date": _get_date(),
+        "generation_config": gen_config,
+        "speakers": sorted(s for s in speakers_used if s),
+        "samples": samples,
+    }
+
+    out_path = BASELINES_DIR / f"{name}.json"
+    save_baseline(baseline, out_path)
+    print(f"Baseline saved to {out_path}")
+    print(f"  {len(samples)} samples, commit {commit}, branch {branch}")
+    if gen_config:
+        print(f"  Generation config: steps={gen_config.get('num_steps')}, "
+              f"guidance={gen_config.get('guidance_scale')}, seed={gen_config.get('seed')}")
+    print(f"  Speakers: {', '.join(sorted(speakers_used)) if speakers_used else 'unknown'}")
+
+
+def _get_date():
+    from datetime import datetime
+    return datetime.now().strftime("%Y-%m-%d")
 
 
 def main():
-    parser = argparse.ArgumentParser(description="LuxTTS Audio Quality Evaluation CLI")
-    parser.add_argument("--generate-baselines", action="store_true", help="Create/update baseline file")
-    parser.add_argument("--compare-baselines", action="store_true", help="Compare current vs baseline")
-    parser.add_argument("--list-cases", action="store_true", help="List all test cases")
-    parser.add_argument("--baseline-name", default="master_baseline", help="Baseline file name (without .json)")
-    parser.add_argument("--threshold", type=float, default=5.0, help="Regression threshold (%%)")
-    parser.add_argument("--version", default="v1", help="Baseline version label")
+    if len(sys.argv) < 2:
+        print(__doc__)
+        sys.exit(0)
 
-    args = parser.parse_args()
+    command = sys.argv[1]
 
-    if args.list_cases:
-        list_cases()
-    elif args.generate_baselines:
-        generate_baselines(version=args.version, baseline_name=args.baseline_name)
-    elif args.compare_baselines:
-        compare_baselines(baseline_name=args.baseline_name, threshold=args.threshold)
+    if command == "score":
+        skip_sim = "--no-sim" in sys.argv
+        cmd_score(skip_similarity=skip_sim)
+    elif command == "compare":
+        baseline_name = "master_baseline"
+        threshold = 5.0
+        for arg in sys.argv[2:]:
+            if arg.startswith("--baseline="):
+                baseline_name = arg.split("=", 1)[1]
+            elif arg.startswith("--threshold="):
+                threshold = float(arg.split("=", 1)[1])
+        cmd_compare(baseline_name=baseline_name, threshold=threshold)
+    elif command == "save-baseline":
+        if len(sys.argv) < 3:
+            print("Usage: python tests/eval_audio_quality.py save-baseline <name>")
+            sys.exit(1)
+        cmd_save_baseline(sys.argv[2])
     else:
-        parser.print_help()
+        print(f"Unknown command: {command}")
+        print("Commands: score, compare, save-baseline")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
