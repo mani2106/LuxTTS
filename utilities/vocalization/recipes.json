@@ -28,8 +28,8 @@
     "effects": [
       {"type": "pitch_shift", "semitones": -4},
       {"type": "low_pass_filter", "cutoff_hz": 700},
-      {"type": "breath_noise", "amplitude": 0.05},
-      {"type": "fade_out", "duration_s": 0.8}
+      {"type": "breath_noise", "amplitude": 0.08},
+      {"type": "fade_out", "duration_s": 0.6}
     ]
   },
   "gasps": {
@@ -70,9 +70,10 @@
     "mode": "modify_speech",
     "effects": [
       {"type": "pitch_shift", "semitones": -2},
-      {"type": "high_pass_filter", "cutoff_hz": 800},
+      {"type": "high_pass_filter", "cutoff_hz": 600},
+      {"type": "low_pass_filter", "cutoff_hz": 4000},
       {"type": "breath_noise", "amplitude": 0.15},
-      {"type": "volume", "factor": 0.4}
+      {"type": "volume", "factor": 0.35}
     ]
   },
   "breathes heavily": {
@@ -127,14 +128,26 @@
       {"type": "volume", "factor": 0.7}
     ]
   },
-  "whimpers": {
-    "tts_text": "whimper",
-    "tts_speed": 0.9,
+  "struggling": {
+    "tts_text": "ngh",
+    "tts_speed": 0.85,
     "max_duration_s": 1.5,
     "effects": [
       {"type": "pitch_shift", "semitones": -4},
-      {"type": "low_pass_filter", "cutoff_hz": 700},
-      {"type": "breath_noise", "amplitude": 0.08},
+      {"type": "low_pass_filter", "cutoff_hz": 800},
+      {"type": "distortion", "intensity": 0.15},
+      {"type": "compress", "threshold_db": -12, "ratio": 3},
+      {"type": "volume", "factor": 1.0}
+    ]
+  },
+  "whimpers": {
+    "tts_text": "ah",
+    "tts_speed": 0.9,
+    "max_duration_s": 1.5,
+    "effects": [
+      {"type": "pitch_shift", "semitones": -3},
+      {"type": "low_pass_filter", "cutoff_hz": 900},
+      {"type": "breath_noise", "amplitude": 0.10},
       {"type": "volume", "factor": 0.6}
     ]
   },
