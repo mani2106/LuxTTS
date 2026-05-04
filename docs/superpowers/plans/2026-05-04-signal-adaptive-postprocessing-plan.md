@@ -4,7 +4,7 @@
 
 **Goal:** Replace the uniform 8-stage post-processing pipeline with a signal-adaptive pipeline that only applies processing when the audio actually needs it, reducing OVRL degradation from 30% to under 5%.
 
-**Architecture:** A `SignalProfile` dataclass measures incoming audio (peak, RMS, spectral centroid, sibilance ratio) and drives adaptive decisions — which stages to run and how aggressively. Removed stages (spectral enrichment, prosodic modulation, room presence, auto pitch shift, full compressor) remain as opt-in parameters. LUFS target changes from -16 to -18.
+**Architecture:** A `SignalProfile` dataclass measures incoming audio (peak, RMS, true-peak dBTP, spectral centroid, sibilance ratio, crest factor, spectral tilt) and drives adaptive decisions — which stages run and how aggressively. The limiter uses soft-knee limiting instead of brick-wall clipping. De-esser intensity scales proportionally with measured sibilance. A standardized manifest JSON is emitted per sample for regression tracing. Removed stages (spectral enrichment, prosodic modulation, room presence, auto pitch shift, full compressor) remain as opt-in parameters. LUFS target changes from -16 to -18.
 
 **Tech Stack:** Python, numpy, scipy, pedalboard (optional), pyloudnorm (optional)
 
@@ -14,10 +14,12 @@
 
 | File | Action | Responsibility |
 |------|--------|----------------|
-| `utilities/post_processor.py` | Modify | Add `SignalProfile`, rewrite `process()` to be adaptive, add `_limit_peak()` method |
-| `utilities/app_constants.py` | Modify | Update defaults for new LUFS target, adaptive thresholds, opt-in flags |
-| `utilities/vocalization/recipes.json` | Modify | Add NSFW tags (moans, groans, whimpers, struggling), update whisper recipe |
-| `tests/test_post_processor.py` | Modify | Add tests for SignalProfile, adaptive gating, limiter, new LUFS target |
+| `utilities/post_processor.py` | Modify | Add `SignalProfile`, rewrite `process()` to be adaptive, add `_limit_peak()` soft-knee limiter, proportional de-esser, manifest output |
+| `utilities/app_constants.py` | Modify | Update defaults for new LUFS target, adaptive thresholds, limiter params, opt-in flags |
+| `utilities/vocalization/recipes.json` | Modify | Add struggling tag, update whisper/whimper/moan recipes |
+| `utilities/vocalization/distinctness_check.py` | Create | Vocalization distinctness check (centroid + energy ratio vs speech baseline) |
+| `tests/test_post_processor.py` | Modify | Add tests for SignalProfile, adaptive gating, soft-knee limiter, proportional de-esser, manifest output |
+| `tests/test_distinctness_check.py` | Create | Tests for vocalization distinctness check |
 | `tests/audio_quality/test_full_eval.py` | Modify | Add NSFW vocalization test cases |
 
 ---
@@ -41,15 +43,17 @@ def test_analyze_signal_speech_like():
     sr = 48000
     duration = 1.0
     t = np.linspace(0, duration, int(sr * duration))
-    # Speech-like: fundamental + harmonics
     audio = (0.5 * np.sin(2 * np.pi * 200 * t) + 0.2 * np.sin(2 * np.pi * 600 * t)).astype(np.float32)
 
     profile = analyze_signal(audio, sr)
 
     assert 0.0 < profile.peak < 1.0
+    assert profile.true_peak_db < 0.0  # True-peak should be negative dB for sub-unity signal
     assert 0.0 < profile.rms < 1.0
     assert 100 < profile.spectral_centroid < 5000
     assert 0.0 <= profile.sibilance_ratio <= 1.0
+    assert profile.crest_factor_db > 0.0  # Peak > RMS means positive crest factor
+    assert -20 < profile.spectral_tilt_db_per_octave < 20  # Reasonable range
 
 
 def test_analyze_signal_bright_audio():
@@ -57,7 +61,6 @@ def test_analyze_signal_bright_audio():
     sr = 48000
     duration = 1.0
     t = np.linspace(0, duration, int(sr * duration))
-    # Bright: mostly high-frequency
     audio = (0.1 * np.sin(2 * np.pi * 200 * t) + 0.5 * np.sin(2 * np.pi * 6000 * t)).astype(np.float32)
 
     profile = analyze_signal(audio, sr)
@@ -96,7 +99,6 @@ def test_analyze_signal_boomy_audio():
     sr = 48000
     duration = 1.0
     t = np.linspace(0, duration, int(sr * duration))
-    # Boomy: mostly low-frequency content
     audio = (0.5 * np.sin(2 * np.pi * 100 * t) + 0.1 * np.sin(2 * np.pi * 300 * t)).astype(np.float32)
 
     profile = analyze_signal(audio, sr)
@@ -106,7 +108,11 @@ def test_analyze_signal_boomy_audio():
 
 def test_signal_profile_properties():
     """SignalProfile properties should return correct booleans."""
-    profile = SignalProfile(peak=0.5, rms=0.1, spectral_centroid=2500.0, sibilance_ratio=0.05)
+    profile = SignalProfile(
+        peak=0.5, true_peak_db=-6.0, rms=0.1,
+        spectral_centroid=2500.0, sibilance_ratio=0.05,
+        crest_factor_db=14.0, spectral_tilt_db_per_octave=-3.0,
+    )
 
     assert profile.needs_limiting is False
     assert profile.needs_de_essing is False
@@ -122,6 +128,20 @@ def test_analyze_signal_silence():
     assert profile.peak == 0.0
     assert profile.rms == 0.0
     assert profile.needs_limiting is False
+
+
+def test_analyze_signal_true_peak_oversampled():
+    """True-peak should catch inter-sample overs that sample peak misses."""
+    sr = 48000
+    duration = 1.0
+    t = np.linspace(0, duration, int(sr * duration))
+    # Construct a signal near unity where true-peak may exceed sample peak
+    audio = (0.95 * np.sin(2 * np.pi * 440 * t) + 0.05 * np.sin(2 * np.pi * 3000 * t)).astype(np.float32)
+
+    profile = analyze_signal(audio, sr)
+
+    # True-peak should be >= sample peak (never less)
+    assert profile.true_peak_db >= 20 * np.log10(profile.peak + 1e-10)
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -134,13 +154,19 @@ Expected: FAIL with `ImportError: cannot import name 'SignalProfile'`
 Add to `utilities/post_processor.py` after the imports (before `PitchDetector` class at ~line 26):
 
 ```python
+from dataclasses import dataclass
+
+
 @dataclass
 class SignalProfile:
     """Analysis of audio signal characteristics for adaptive processing decisions."""
-    peak: float
-    rms: float
-    spectral_centroid: float  # Hz
-    sibilance_ratio: float    # Energy in 4-8kHz / total energy
+    peak: float                      # Max absolute sample amplitude
+    true_peak_db: float              # True-peak in dBTP via 4x oversampling
+    rms: float                       # Root mean square level
+    spectral_centroid: float         # Hz - brightness measure
+    sibilance_ratio: float           # Energy in 4-8kHz / total energy
+    crest_factor_db: float           # 20*log10(peak/rms) - dynamics measure
+    spectral_tilt_db_per_octave: float  # Slope of spectrum - body/brightness proxy
 
     @property
     def needs_limiting(self) -> bool:
@@ -159,12 +185,28 @@ class SignalProfile:
         return self.spectral_centroid > 3500 and self.rms < 0.15
 
 
+def _compute_true_peak_db(audio: np.ndarray) -> float:
+    """Compute true-peak via 4x oversampling."""
+    n = len(audio)
+    # Zero-pad to 4x length
+    padded = np.zeros(n * 4, dtype=np.float64)
+    padded[::4] = audio.astype(np.float64)
+    # Low-pass filter (sinc interpolation approximation)
+    cutoff = 1.0 / 4.0
+    b, a = signal.butter(8, cutoff, btype='low')
+    oversampled = signal.filtfilt(b, a, padded)
+    true_peak = np.max(np.abs(oversampled))
+    return float(20 * np.log10(true_peak + 1e-10))
+
+
 def analyze_signal(audio: np.ndarray, sr: int) -> SignalProfile:
     """Analyze audio to produce a SignalProfile for adaptive processing."""
     peak = float(np.max(np.abs(audio)))
+    true_peak_db = _compute_true_peak_db(audio)
     rms = float(np.sqrt(np.mean(audio ** 2)))
+    crest_factor_db = float(20 * np.log10(peak / (rms + 1e-10)))
 
-    # Spectral centroid via FFT
+    # Spectral analysis via FFT
     n = len(audio)
     fft_magnitude = np.abs(np.fft.rfft(audio))
     freqs = np.fft.rfftfreq(n, 1.0 / sr)
@@ -176,18 +218,26 @@ def analyze_signal(audio: np.ndarray, sr: int) -> SignalProfile:
     sibilance_energy = float(np.sum(fft_magnitude[sibilance_mask]))
     sibilance_ratio = sibilance_energy / total_energy
 
+    # Spectral tilt: slope of log-spectrum in dB per octave
+    # Fit linear regression to (log2(freq), magnitude_dB)
+    valid = freqs > 0
+    log_freqs = np.log2(freqs[valid])
+    mag_db = 20 * np.log10(fft_magnitude[valid] + 1e-10)
+    if len(log_freqs) > 1:
+        coeffs = np.polyfit(log_freqs, mag_db, 1)
+        spectral_tilt = float(coeffs[0])  # dB per octave
+    else:
+        spectral_tilt = 0.0
+
     return SignalProfile(
         peak=peak,
+        true_peak_db=true_peak_db,
         rms=rms,
         spectral_centroid=spectral_centroid,
         sibilance_ratio=sibilance_ratio,
+        crest_factor_db=crest_factor_db,
+        spectral_tilt_db_per_octave=spectral_tilt,
     )
-```
-
-Also add `dataclass` to imports at the top of the file:
-
-```python
-from dataclasses import dataclass
 ```
 
 - [ ] **Step 4: Run tests to verify they pass**
@@ -199,24 +249,24 @@ Expected: All PASS
 
 ```bash
 git add utilities/post_processor.py tests/test_post_processor.py
-git commit -m "feat: add SignalProfile dataclass and analyze_signal for adaptive pipeline"
+git commit -m "feat: add SignalProfile with true-peak, crest factor, spectral tilt"
 ```
 
 ---
 
-### Task 2: Add adaptive limiter method
+### Task 2: Add soft-knee limiter method
 
 **Files:**
 - Modify: `utilities/post_processor.py` (add method to `AudioPostProcessor` class, after `compress()` method ~line 560)
 - Test: `tests/test_post_processor.py`
 
-- [ ] **Step 1: Write the failing tests for adaptive limiter**
+- [ ] **Step 1: Write the failing tests for soft-knee limiter**
 
 Add to `tests/test_post_processor.py`:
 
 ```python
-def test_limit_peak_clipping_audio():
-    """Limiter should reduce peaks that exceed threshold."""
+def test_limit_peak_soft_knee_reduces_loud_audio():
+    """Soft-knee limiter should reduce peaks without hard clipping artifacts."""
     sr = 48000
     duration = 1.0
     t = np.linspace(0, duration, int(sr * duration))
@@ -225,12 +275,14 @@ def test_limit_peak_clipping_audio():
     processor = AudioPostProcessor()
     processed, diagnostics = processor.limit_peak(audio, sr, threshold_db=-1.0)
 
-    peak_limit_linear = 10 ** (-1.0 / 20)
-    assert np.max(np.abs(processed)) <= peak_limit_linear + 1e-6
+    threshold_linear = 10 ** (-1.0 / 20)
+    assert np.max(np.abs(processed)) <= threshold_linear + 0.02  # Small tolerance
     assert diagnostics['limiting_applied'] is True
+    assert 'max_gain_reduction_db' in diagnostics
+    assert diagnostics['max_gain_reduction_db'] <= 6.0  # Cap at 6dB
 
 
-def test_limit_peak_safe_audio():
+def test_limit_peak_safe_audio_passes_through():
     """Audio below threshold should pass through unchanged."""
     sr = 48000
     duration = 1.0
@@ -252,6 +304,24 @@ def test_limit_peak_silence():
 
     assert processed is not None
     assert len(processed) == 48000
+
+
+def test_limit_peak_no_hard_clipping():
+    """Soft-knee should not produce the flat-top distortion of hard clipping."""
+    sr = 48000
+    duration = 0.5
+    t = np.linspace(0, duration, int(sr * duration))
+    # Create a signal with sharp peaks
+    audio = (0.99 * np.sin(2 * np.pi * 200 * t)).astype(np.float32)
+
+    processor = AudioPostProcessor()
+    processed, diagnostics = processor.limit_peak(audio, sr, threshold_db=-1.0)
+
+    # Count samples exactly at threshold — should be near zero for soft-knee
+    threshold_linear = 10 ** (-1.0 / 20)
+    at_threshold = np.sum(np.abs(processed) >= threshold_linear - 0.001)
+    # Hard clip would have many samples exactly at threshold; soft-knee should have far fewer
+    assert at_threshold < len(processed) * 0.1
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -259,9 +329,9 @@ def test_limit_peak_silence():
 Run: `.venv/Scripts/python -m pytest tests/test_post_processor.py::test_limit_peak -v`
 Expected: FAIL with `AttributeError: 'AudioPostProcessor' object has no attribute 'limit_peak'`
 
-- [ ] **Step 3: Implement limit_peak method**
+- [ ] **Step 3: Implement soft-knee limiter**
 
-Add to `AudioPostProcessor` class in `utilities/post_processor.py` (after the `compress()` method ends, around line ~600):
+Add to `AudioPostProcessor` class in `utilities/post_processor.py` (after the `compress()` method, around line ~600):
 
 ```python
 def limit_peak(
@@ -269,24 +339,55 @@ def limit_peak(
     audio: np.ndarray,
     sr: int,
     threshold_db: float = -1.0,
+    attack_ms: float = 1.0,
+    release_ms: float = 80.0,
+    max_reduction_db: float = 6.0,
 ) -> tuple[np.ndarray, dict]:
-    """Brick-wall peak limiter. Only reduces samples exceeding threshold."""
+    """Soft-knee peak limiter with envelope follower.
+
+    Uses an envelope follower (attack/release smoothing) to apply
+    gain reduction smoothly, avoiding the flat-top distortion of
+    hard brick-wall clipping.
+    """
     threshold_linear = 10 ** (threshold_db / 20)
     peak = np.max(np.abs(audio))
 
     if peak <= threshold_linear:
-        return audio.copy(), {'limiting_applied': False, 'peak_before': float(peak)}
+        return audio.copy(), {
+            'limiting_applied': False,
+            'peak_before': float(peak),
+            'max_gain_reduction_db': 0.0,
+        }
 
-    # Simple brick-wall limiting with soft-knee smoothing
-    # Apply gain reduction only where peaks exceed threshold
-    processed = audio.copy()
-    mask = np.abs(processed) > threshold_linear
-    processed[mask] = np.sign(processed[mask]) * threshold_linear
+    # Envelope follower in sample domain
+    attack_coeff = 1.0 - np.exp(-1.0 / (sr * attack_ms / 1000.0))
+    release_coeff = 1.0 - np.exp(-1.0 / (sr * release_ms / 1000.0))
 
-    return processed.astype(np.float32), {
+    envelope = np.zeros(len(audio), dtype=np.float64)
+    envelope[0] = np.abs(audio[0])
+    for i in range(1, len(audio)):
+        abs_sample = abs(audio[i])
+        coeff = attack_coeff if abs_sample > envelope[i - 1] else release_coeff
+        envelope[i] = envelope[i - 1] + coeff * (abs_sample - envelope[i - 1])
+
+    # Gain reduction: soft transition around threshold
+    # gain = threshold / envelope when envelope > threshold
+    gain_reduction = np.ones(len(audio), dtype=np.float64)
+    over_mask = envelope > threshold_linear
+    # Compute required gain, capped at max_reduction_db
+    min_gain = 10 ** (-max_reduction_db / 20.0)
+    gain_reduction[over_mask] = np.maximum(
+        threshold_linear / envelope[over_mask], min_gain
+    )
+
+    processed = (audio.astype(np.float64) * gain_reduction).astype(np.float32)
+    max_gr = float(-20 * np.log10(np.min(gain_reduction) + 1e-10))
+
+    return processed, {
         'limiting_applied': True,
         'peak_before': float(peak),
         'peak_after': float(np.max(np.abs(processed))),
+        'max_gain_reduction_db': round(max_gr, 2),
     }
 ```
 
@@ -299,7 +400,7 @@ Expected: All PASS
 
 ```bash
 git add utilities/post_processor.py tests/test_post_processor.py
-git commit -m "feat: add limit_peak brick-wall limiter method"
+git commit -m "feat: add soft-knee limiter with envelope follower and 6dB cap"
 ```
 
 ---
@@ -333,12 +434,23 @@ CENTROID_LOW_THRESHOLD = 1500.0   # Hz - mud cut activates below this
 CENTROID_HIGH_THRESHOLD = 3500.0  # Hz - presence boost activates above this
 PEAK_LIMIT_THRESHOLD = 0.93      # Limiter activates above this
 HPF_CUTOFF_HZ = 80.0             # High-pass filter cutoff (always on)
+
+# Soft-knee limiter defaults
+LIMITER_THRESHOLD_DB = -1.0      # dBTP
+LIMITER_ATTACK_MS = 1.0          # 0-2ms range
+LIMITER_RELEASE_MS = 80.0        # 50-150ms range for speech
+LIMITER_MAX_REDUCTION_DB = 6.0   # Cap to avoid aggressive pumping
+
+# De-esser proportional scaling
+DE_ESS_SIBILANCE_FLOOR = 0.15    # Below this ratio, no de-essing
+DE_ESS_SIBILANCE_SCALE = 4.0     # Multiplier for proportional intensity
+DE_ESS_MAX_REDUCTION_DB = -6.0   # Max gain reduction in sibilance band
 ```
 
 - [ ] **Step 2: Verify no import errors**
 
-Run: `.venv/Scripts/python -c "from utilities.app_constants import DEFAULT_TARGET_LOUDNESS_LUFS, SIBILANCE_RATIO_THRESHOLD; print(f'LUFS={DEFAULT_TARGET_LOUDNESS_LUFS}, Sibilance={SIBILANCE_RATIO_THRESHOLD}')"`
-Expected: `LUFS=-18.0, Sibilance=0.15`
+Run: `.venv/Scripts/python -c "from utilities.app_constants import DEFAULT_TARGET_LOUDNESS_LUFS, LIMITER_MAX_REDUCTION_DB; print(f'LUFS={DEFAULT_TARGET_LOUDNESS_LUFS}, LimiterCap={LIMITER_MAX_REDUCTION_DB}')"`
+Expected: `LUFS=-18.0, LimiterCap=6.0`
 
 - [ ] **Step 3: Commit**
 
@@ -394,13 +506,29 @@ def test_process_adaptive_no_sibilance_skips_deesser():
     sr = 48000
     duration = 1.0
     t = np.linspace(0, duration, int(sr * duration))
-    # Low-frequency only — no sibilance
     audio = (0.3 * np.sin(2 * np.pi * 200 * t)).astype(np.float32)
 
     processor = AudioPostProcessor(return_diagnostics=True)
     processed, diagnostics = processor.process(audio, sr)
 
     assert diagnostics['signal_profile']['needs_de_essing'] is False
+
+
+def test_process_proportional_deesser_scales_with_sibilance():
+    """De-esser intensity should be proportional to sibilance ratio."""
+    sr = 48000
+    duration = 1.0
+    t = np.linspace(0, duration, int(sr * duration))
+    # High sibilance signal
+    audio = (0.1 * np.sin(2 * np.pi * 200 * t) + 0.6 * np.sin(2 * np.pi * 6000 * t)).astype(np.float32)
+
+    processor = AudioPostProcessor(return_diagnostics=True)
+    processed, diagnostics = processor.process(audio, sr)
+
+    assert diagnostics['signal_profile']['needs_de_essing'] is True
+    assert 'de_esser' in diagnostics
+    # Proportional intensity should be reported
+    assert 'proportional_intensity' in diagnostics['de_esser']
 
 
 def test_process_always_runs_hpf_and_loudness():
@@ -457,6 +585,26 @@ def test_process_removed_stages_not_in_default_diagnostics():
     assert 'spectral_enrich' not in diagnostics
     assert 'room_presence' not in diagnostics
     assert 'prosodic_modulation' not in diagnostics
+
+
+def test_process_emits_manifest():
+    """process() should emit a standardized manifest with required fields."""
+    sr = 48000
+    duration = 1.0
+    t = np.linspace(0, duration, int(sr * duration))
+    audio = (0.3 * np.sin(2 * np.pi * 200 * t) + 0.1 * np.sin(2 * np.pi * 4000 * t)).astype(np.float32)
+
+    processor = AudioPostProcessor(return_diagnostics=True)
+    _, diagnostics = processor.process(audio, sr)
+
+    assert 'manifest' in diagnostics
+    manifest = diagnostics['manifest']
+    required_fields = [
+        'integrated_lufs', 'true_peak_db', 'spectral_centroid_hz',
+        'sibilance_ratio', 'crest_factor_db', 'max_gain_reduction_db',
+    ]
+    for field in required_fields:
+        assert field in manifest, f"Manifest missing required field: {field}"
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -496,46 +644,33 @@ def process(
     Adaptive pipeline (default):
     0. Signal analysis -> SignalProfile
     1. High-pass filter (always, 80Hz)
-    2. Adaptive de-esser (if sibilance detected)
-    3. Adaptive EQ (if spectral centroid outside normal range)
-    4. Adaptive limiter (if peak > threshold)
+    2. Adaptive de-esser (proportional to sibilance ratio)
+    3. Adaptive EQ (mud cut or presence boost, high-shelf for presence)
+    4. Adaptive limiter (soft-knee, if peak > threshold)
     5. Loudness normalization (always, -18 LUFS)
+
+    Emits a standardized manifest for regression tracing.
 
     Opt-in stages (default off):
     - Compressor, pitch shift, prosodic modulation, room presence,
       spectral enrichment
-
-    Args:
-        audio: Input audio (float32, typically 48kHz)
-        sr: Sample rate
-        text: Dialogue text (used for auto pitch detection if enabled)
-        pitch_shift: Manual pitch override in semitones
-        eq_intensity: EQ intensity (0.0-1.0)
-        de_ess_intensity: De-essing intensity (0.0-1.0)
-        compressor_*: Compressor parameters (only used if enable_compressor=True)
-        target_loudness: Target loudness in LUFS (default -18.0)
-        enable_post_processing: If False, bypass all processing
-        enable_spectral_enrichment: Enable harmonic exciter (opt-in)
-        enable_room_presence: Enable room reverb (opt-in)
-        enable_prosodic_modulation: Enable amplitude modulation (opt-in)
-        enable_auto_pitch_shift: Enable heuristic pitch detection (opt-in)
-        enable_compressor: Enable full compressor instead of adaptive limiter (opt-in)
-
-    Returns:
-        (processed_audio, diagnostics_dict)
     """
     if not enable_post_processing:
         return audio.copy(), {}
 
     all_diagnostics = {}
+    max_gain_reduction_db_seen = 0.0
 
     # Stage 0: Signal analysis
     profile = analyze_signal(audio, sr)
     all_diagnostics['signal_profile'] = {
         'peak': profile.peak,
+        'true_peak_db': profile.true_peak_db,
         'rms': profile.rms,
         'spectral_centroid': profile.spectral_centroid,
         'sibilance_ratio': profile.sibilance_ratio,
+        'crest_factor_db': profile.crest_factor_db,
+        'spectral_tilt_db_per_octave': profile.spectral_tilt_db_per_octave,
         'needs_limiting': profile.needs_limiting,
         'needs_de_essing': profile.needs_de_essing,
         'needs_mud_cut': profile.needs_mud_cut,
@@ -547,24 +682,38 @@ def process(
     audio = signal.filtfilt(b, a, audio).astype(np.float32)
     all_diagnostics['high_pass_filter'] = {'cutoff_hz': 80}
 
-    # Stage 2: Adaptive de-esser
+    # Stage 2: Adaptive de-esser (proportional to sibilance)
     if profile.needs_de_essing and de_ess_intensity > 0:
-        audio, de_ess_diag = self.de_esser(audio, sr, intensity=de_ess_intensity)
+        # Proportional scaling: intensity = clamp((ratio - floor) * scale, 0, 1)
+        from utilities.app_constants import DE_ESS_SIBILANCE_FLOOR, DE_ESS_SIBILANCE_SCALE
+        proportional = min(max(
+            (profile.sibilance_ratio - DE_ESS_SIBILANCE_FLOOR) * DE_ESS_SIBILANCE_SCALE,
+            0.0
+        ), 1.0)
+        scaled_intensity = de_ess_intensity * proportional
+
+        audio, de_ess_diag = self.de_esser(audio, sr, intensity=scaled_intensity)
         if de_ess_diag:
+            de_ess_diag['proportional_intensity'] = round(proportional, 3)
+            de_ess_diag['scaled_intensity'] = round(scaled_intensity, 3)
             all_diagnostics['de_esser'] = de_ess_diag
-    elif HAS_TDR_NOVA and self.tdr_nova_plugin is not None and de_ess_intensity > 0:
-        # TDR Nova combines de-esser + EQ — only use if de-essing would be beneficial
-        pass  # Skip TDR Nova when signal doesn't need de-essing
 
     # Stage 3: Adaptive EQ
     if profile.needs_mud_cut:
         b, a = self._design_peaking(300, 1.0, -2.0 * eq_intensity, sr)
         audio = signal.filtfilt(b, a, audio).astype(np.float32)
-        all_diagnostics['adaptive_eq'] = {'action': 'mud_cut', 'frequency': 300, 'gain_db': -2.0 * eq_intensity}
+        all_diagnostics['adaptive_eq'] = {
+            'action': 'mud_cut', 'frequency': 300, 'gain_db': -2.0 * eq_intensity,
+        }
     elif profile.needs_presence_boost:
-        b, a = self._design_peaking(3000, 1.0, 1.0 * eq_intensity, sr)
-        audio = signal.filtfilt(b, a, audio).astype(np.float32)
-        all_diagnostics['adaptive_eq'] = {'action': 'presence_boost', 'frequency': 3000, 'gain_db': 1.0 * eq_intensity}
+        # Use high-shelf for presence (gentler than peaking)
+        b, a = signal.butter(2, 3500 / (sr / 2), btype='high')
+        shelf_gain = 0.8 * eq_intensity  # +0.8 dB max
+        audio = audio + shelf_gain * (signal.filtfilt(b, a, audio) * 0.1).astype(np.float32)
+        all_diagnostics['adaptive_eq'] = {
+            'action': 'presence_boost', 'type': 'high_shelf',
+            'frequency': 3500, 'gain_db': 0.8 * eq_intensity,
+        }
 
     # Stage 4: Adaptive limiter OR opt-in compressor
     if enable_compressor:
@@ -578,10 +727,18 @@ def process(
             max_reduction_db=max_gain_reduction_db,
         )
         if comp_diag:
+            max_gain_reduction_db_seen = max(
+                max_gain_reduction_db_seen,
+                comp_diag.get('max_gain_reduction_db', 0.0),
+            )
             all_diagnostics['compressor'] = comp_diag
     elif profile.needs_limiting:
         audio, limiter_diag = self.limit_peak(audio, sr, threshold_db=-1.0)
         if limiter_diag:
+            max_gain_reduction_db_seen = max(
+                max_gain_reduction_db_seen,
+                limiter_diag.get('max_gain_reduction_db', 0.0),
+            )
             all_diagnostics['peak_limiter'] = limiter_diag
 
     # Opt-in: Auto pitch shift
@@ -619,12 +776,23 @@ def process(
         loudness_diag['target_lufs'] = target_loudness
         all_diagnostics['normalize_loudness'] = loudness_diag
 
+    # Emit standardized manifest
+    post_profile = analyze_signal(audio, sr)
+    all_diagnostics['manifest'] = {
+        'integrated_lufs': loudness_diag.get('loudness_lufs', 0.0) if loudness_diag else 0.0,
+        'true_peak_db': post_profile.true_peak_db,
+        'spectral_centroid_hz': round(post_profile.spectral_centroid, 1),
+        'sibilance_ratio': round(post_profile.sibilance_ratio, 4),
+        'crest_factor_db': round(post_profile.crest_factor_db, 1),
+        'max_gain_reduction_db': round(max_gain_reduction_db_seen, 2),
+    }
+
     return audio.astype(np.float32), all_diagnostics
 ```
 
 - [ ] **Step 4: Run the new tests**
 
-Run: `.venv/Scripts/python -m pytest tests/test_post_processor.py::test_process_adaptive tests/test_post_processor.py::test_process_disabled tests/test_post_processor.py::test_process_target_lufs tests/test_post_processor.py::test_process_removed_stages_not_in_default_diagnostics tests/test_post_processor.py::test_process_always_runs -v`
+Run: `.venv/Scripts/python -m pytest tests/test_post_processor.py::test_process_adaptive tests/test_post_processor.py::test_process_disabled tests/test_post_processor.py::test_process_target_lufs tests/test_post_processor.py::test_process_removed_stages_not_in_default_diagnostics tests/test_post_processor.py::test_process_always_runs tests/test_post_processor.py::test_process_proportional tests/test_post_processor.py::test_process_emits_manifest -v`
 Expected: All PASS
 
 - [ ] **Step 5: Run ALL existing tests to check for regressions**
@@ -639,7 +807,10 @@ git add utilities/post_processor.py tests/test_post_processor.py
 git commit -m "feat: rewrite process() with signal-adaptive pipeline
 
 - Signal analysis drives which stages run
-- De-esser, EQ, limiter are conditionally applied
+- Soft-knee limiter replaces brick-wall clipping
+- De-esser intensity scales proportionally with sibilance ratio
+- Presence boost uses high-shelf instead of peaking EQ
+- Standardized manifest emitted per sample for regression tracing
 - Spectral enrichment, room presence, prosodic modulation, auto pitch shift
   are opt-in (enable_* parameters, default False)
 - Compressor is opt-in (enable_compressor, default False)
@@ -681,16 +852,14 @@ git commit -m "fix: update pipeline defaults to use new constant values"
 
 ---
 
-### Task 6: Update vocalization recipes — new NSFW tags and whisper fix
+### Task 6: Update vocalization recipes — new tags and whisper fix
 
 **Files:**
 - Modify: `utilities/vocalization/recipes.json`
 
-- [ ] **Step 1: Add NSFW tags and update whisper recipe**
+- [ ] **Step 1: Update whisper, whimper, moan recipes and add struggling tag**
 
-The tags `moans`, `groans`, and `whimpers` already exist in recipes.json. Update `whimpers` with the spec parameters and add the new `struggling` tag. Update `whispers` to add LPF.
-
-Update the `whispers` entry to add band-pass filtering:
+Replace the `whispers` entry with band-pass filtering (add LPF):
 
 ```json
 "whispers": {
@@ -701,12 +870,12 @@ Update the `whispers` entry to add band-pass filtering:
       {"type": "high_pass_filter", "cutoff_hz": 600},
       {"type": "low_pass_filter", "cutoff_hz": 4000},
       {"type": "breath_noise", "amplitude": 0.15},
-      {"type": "volume", "factor": 0.4}
+      {"type": "volume", "factor": 0.35}
     ]
 }
 ```
 
-Update the `whimpers` entry to match spec parameters (LPF 900Hz instead of 700Hz, breath 0.10 instead of 0.08):
+Replace `whimpers` entry with spec parameters:
 
 ```json
 "whimpers": {
@@ -722,7 +891,7 @@ Update the `whimpers` entry to match spec parameters (LPF 900Hz instead of 700Hz
 }
 ```
 
-Update `moans` entry to match spec (breath 0.08 instead of 0.05):
+Replace `moans` entry with spec parameters:
 
 ```json
 "moans": {
@@ -769,14 +938,255 @@ git commit -m "feat: add struggling tag, update whisper/whimper/moan recipes per
 
 ---
 
-### Task 7: Add NSFW vocalization test cases to audio quality eval
+### Task 7: Add vocalization distinctness check
 
 **Files:**
-- Modify: `tests/audio_quality/test_full_eval.py` (lines 37-42)
+- Create: `utilities/vocalization/distinctness_check.py`
+- Create: `tests/test_distinctness_check.py`
+
+Vocalizations must be audibly distinct from speech. This check compares a vocalization's spectral centroid and energy against a speech baseline and fails if they're too similar (meaning DSP didn't produce a meaningfully different sound).
+
+- [ ] **Step 1: Write the failing tests**
+
+Create `tests/test_distinctness_check.py`:
+
+```python
+import numpy as np
+import pytest
+
+from utilities.vocalization.distinctness_check import check_vocalization_distinctness
+
+
+def _make_speech_like(sr=48000, duration=1.0):
+    """Generate speech-like audio: fundamental + harmonics around 200-600Hz."""
+    t = np.linspace(0, duration, int(sr * duration))
+    return (0.3 * np.sin(2 * np.pi * 200 * t) + 0.15 * np.sin(2 * np.pi * 600 * t)).astype(np.float32)
+
+
+def _make_whisper_like(sr=48000, duration=1.0):
+    """Generate whisper-like audio: band-limited noise in 600-4000Hz."""
+    n = int(sr * duration)
+    noise = np.random.randn(n).astype(np.float32) * 0.1
+    b, a = __import__('scipy').signal.butter(4, [600 / (sr / 2), 4000 / (sr / 2)], btype='band')
+    return __import__('scipy').signal.filtfilt(b, a, noise).astype(np.float32)
+
+
+def test_distinct_vocalization_passes():
+    """A whisper should be distinct enough from speech baseline."""
+    speech = _make_speech_like()
+    vocalization = _make_whisper_like()
+
+    result = check_vocalization_distinctness(vocalization, speech, sr=48000)
+
+    assert result['is_distinct'] is True
+
+
+def test_identical_to_speech_fails():
+    """Audio identical to speech should fail distinctness check."""
+    speech = _make_speech_like()
+
+    result = check_vocalization_distinctness(speech, speech, sr=48000)
+
+    assert result['is_distinct'] is False
+
+
+def test_similar_to_speech_fails():
+    """Audio very similar to speech should fail."""
+    speech = _make_speech_like()
+    # Add tiny difference
+    similar = speech + 0.001 * np.random.randn(len(speech)).astype(np.float32)
+
+    result = check_vocalization_distinctness(similar, speech, sr=48000)
+
+    assert result['is_distinct'] is False
+
+
+def test_silence_handled():
+    """Silent vocalization should not crash."""
+    speech = _make_speech_like()
+    silence = np.zeros(48000, dtype=np.float32)
+
+    result = check_vocalization_distinctness(silence, speech, sr=48000)
+
+    # Silence is distinct (very different energy) but edge case
+    assert 'is_distinct' in result
+    assert 'centroid_diff_hz' in result
+    assert 'energy_ratio_db' in result
+```
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run: `.venv/Scripts/python -m pytest tests/test_distinctness_check.py -v`
+Expected: FAIL with `ModuleNotFoundError: No module named 'utilities.vocalization.distinctness_check'`
+
+- [ ] **Step 3: Implement distinctness check**
+
+Create `utilities/vocalization/distinctness_check.py`:
+
+```python
+"""Vocalization distinctness check — ensures vocalizations are audibly different from speech."""
+
+import numpy as np
+import scipy.signal as signal
+
+
+def _spectral_centroid(audio: np.ndarray, sr: int) -> float:
+    """Compute spectral centroid in Hz."""
+    n = len(audio)
+    fft_mag = np.abs(np.fft.rfft(audio))
+    freqs = np.fft.rfftfreq(n, 1.0 / sr)
+    total = np.sum(fft_mag) + 1e-10
+    return float(np.sum(freqs * fft_mag) / total)
+
+
+def _rms_energy_db(audio: np.ndarray) -> float:
+    """Compute RMS energy in dB."""
+    rms = float(np.sqrt(np.mean(audio ** 2)))
+    return 20 * np.log10(rms + 1e-10)
+
+
+def check_vocalization_distinctness(
+    vocalization: np.ndarray,
+    speech_baseline: np.ndarray,
+    sr: int = 48000,
+    centroid_threshold_hz: float = 200.0,
+    energy_threshold_db: float = 3.0,
+) -> dict:
+    """Check that a vocalization is spectrally distinct from speech.
+
+    Fails if both centroid difference < threshold AND energy ratio within threshold,
+    meaning the vocalization sounds too similar to normal speech.
+
+    Args:
+        vocalization: Processed vocalization audio
+        speech_baseline: Reference speech audio for comparison
+        sr: Sample rate
+        centroid_threshold_hz: Min centroid difference to be distinct (Hz)
+        energy_threshold_db: Max energy difference to be considered "similar" (dB)
+
+    Returns:
+        Dict with is_distinct bool, centroid_diff_hz, energy_ratio_db
+    """
+    voc_centroid = _spectral_centroid(vocalization, sr)
+    speech_centroid = _spectral_centroid(speech_baseline, sr)
+    centroid_diff = abs(voc_centroid - speech_centroid)
+
+    voc_energy = _rms_energy_db(vocalization)
+    speech_energy = _rms_energy_db(speech_baseline)
+    energy_ratio_db = voc_energy - speech_energy
+
+    # Not distinct if centroid is very close AND energy is very similar
+    is_distinct = not (centroid_diff < centroid_threshold_hz and abs(energy_ratio_db) < energy_threshold_db)
+
+    return {
+        'is_distinct': is_distinct,
+        'centroid_diff_hz': round(centroid_diff, 1),
+        'energy_ratio_db': round(energy_ratio_db, 1),
+        'voc_centroid_hz': round(voc_centroid, 1),
+        'speech_centroid_hz': round(speech_centroid, 1),
+    }
+```
+
+- [ ] **Step 4: Run tests to verify they pass**
+
+Run: `.venv/Scripts/python -m pytest tests/test_distinctness_check.py -v`
+Expected: All PASS
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add utilities/vocalization/distinctness_check.py tests/test_distinctness_check.py
+git commit -m "feat: add vocalization distinctness check (centroid + energy ratio)"
+```
+
+---
+
+### Task 8: Add per-speaker baseline generation script
+
+**Files:**
+- Create: `utilities/generate_speaker_baselines.py`
+
+Auto-generates per-speaker baseline JSONs from eval data. Each baseline stores 3 numbers: mean LUFS, spectral centroid, typical peak. Used by the adaptive pipeline to nudge thresholds per voice archetype.
+
+- [ ] **Step 1: Implement baseline generator**
+
+Create `utilities/generate_speaker_baselines.py`:
+
+```python
+"""Generate per-speaker baseline JSONs from audio samples.
+
+Usage:
+    python -m utilities.generate_speaker_baselines --speakers-dir speakers/en --output-dir baselines
+"""
+
+import argparse
+import json
+from pathlib import Path
+
+import numpy as np
+
+from utilities.audio_utils import load_audio
+from utilities.post_processor import analyze_signal
+
+
+def generate_baseline(audio_path: Path) -> dict:
+    """Analyze a speaker reference file and produce baseline stats."""
+    audio, sr = load_audio(str(audio_path))
+    profile = analyze_signal(audio, sr)
+    return {
+        'speaker': audio_path.stem,
+        'mean_lufs': round(-20 * np.log10(profile.rms + 1e-10) - 4.0, 1),  # RMS-to-LUFS approx
+        'spectral_centroid_hz': round(profile.spectral_centroid, 1),
+        'peak': round(profile.peak, 4),
+    }
+
+
+def main():
+    parser = argparse.ArgumentParser(description='Generate per-speaker baseline stats')
+    parser.add_argument('--speakers-dir', type=Path, default=Path('speakers/en'),
+                        help='Directory containing speaker reference WAV files')
+    parser.add_argument('--output-dir', type=Path, default=Path('baselines'),
+                        help='Output directory for baseline JSON files')
+    args = parser.parse_args()
+
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+
+    for wav_file in sorted(args.speakers_dir.glob('*.wav')):
+        baseline = generate_baseline(wav_file)
+        out_path = args.output_dir / f"{wav_file.stem}_baseline.json"
+        out_path.write_text(json.dumps(baseline, indent=2))
+        print(f"  {wav_file.stem}: LUFS={baseline['mean_lufs']}, "
+              f"centroid={baseline['spectral_centroid_hz']}Hz, peak={baseline['peak']}")
+
+    print(f"\nGenerated {len(list(args.output_dir.glob('*.json')))} baselines in {args.output_dir}/")
+
+
+if __name__ == '__main__':
+    main()
+```
+
+- [ ] **Step 2: Verify the script loads**
+
+Run: `.venv/Scripts/python -c "from utilities.generate_speaker_baselines import generate_baseline; print('OK')"`
+Expected: `OK`
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add utilities/generate_speaker_baselines.py
+git commit -m "feat: add per-speaker baseline JSON generator for adaptive thresholds"
+```
+
+---
+
+### Task 9: Add NSFW vocalization test cases to audio quality eval
+
+**Files:**
+- Modify: `tests/audio_quality/test_full_eval.py` (the `VOCALIZATION_CASES` list)
 
 - [ ] **Step 1: Add new vocalization test cases**
 
-In `tests/audio_quality/test_full_eval.py`, update `VOCALIZATION_CASES` to include the new tags:
+Update `VOCALIZATION_CASES` in `tests/audio_quality/test_full_eval.py`:
 
 ```python
 VOCALIZATION_CASES = [
@@ -805,7 +1215,7 @@ git commit -m "feat: add NSFW vocalization test cases to audio quality eval"
 
 ---
 
-### Task 8: Run full test suite and lint
+### Task 10: Run full test suite and lint
 
 **Files:** None — verification only
 
@@ -816,7 +1226,7 @@ Expected: All tests PASS. The `--ignore=tests/audio_quality` skips GPU tests.
 
 - [ ] **Step 2: Run lint**
 
-Run: `.venv/Scripts/python -m ruff check utilities/post_processor.py utilities/app_constants.py utilities/vocalization/recipes.json tests/test_post_processor.py`
+Run: `.venv/Scripts/python -m ruff check utilities/post_processor.py utilities/app_constants.py utilities/vocalization/recipes.json utilities/vocalization/distinctness_check.py utilities/generate_speaker_baselines.py tests/test_post_processor.py tests/test_distinctness_check.py`
 Expected: No errors. If any, fix them.
 
 - [ ] **Step 3: Fix the GradScaler import bug (if not already fixed)**
@@ -836,7 +1246,7 @@ git commit -m "style: lint fixes for signal-adaptive pipeline"
 
 ---
 
-### Task 9: Run audio quality evaluation (requires GPU)
+### Task 11: Run audio quality evaluation (requires GPU)
 
 **Files:** None — evaluation only
 
@@ -858,23 +1268,27 @@ Compare the new scores against the baseline from the design spec. Target: proces
 
 If degradation is still above 5%, investigate which stages are still causing drops and tune thresholds.
 
-- [ ] **Step 4: Save as new baseline**
+- [ ] **Step 4: Generate per-speaker baselines**
 
-Once results look good, update the baseline:
+Run: `.venv/Scripts/python -m utilities.generate_speaker_baselines`
+Expected: JSON files generated for each speaker in `baselines/`
+
+- [ ] **Step 5: Save as new baseline**
+
 ```bash
 cp tests/audio_quality/baselines/latest_scores.json tests/audio_quality/baselines/master_raw_baseline.json
 ```
 
-- [ ] **Step 5: Commit baseline**
+- [ ] **Step 6: Commit baseline**
 
 ```bash
-git add tests/audio_quality/baselines/
+git add tests/audio_quality/baselines/ baselines/
 git commit -m "feat: update audio quality baseline with signal-adaptive pipeline scores"
 ```
 
 ---
 
-### Task 10: Update decision records
+### Task 12: Update decision records
 
 **Files:** None — repowise tool only
 
@@ -884,9 +1298,9 @@ Use repowise `update_decision_records` to create a record of this pipeline chang
 
 Action: `create`
 Title: `Signal-Adaptive Post-Processing Pipeline`
-Decision: `Replaced uniform 8-stage post-processing with 6-stage signal-adaptive pipeline. Stages run conditionally based on signal analysis (peak, RMS, spectral centroid, sibilance ratio). Removed spectral enrichment, room presence, prosodic modulation, and auto pitch shift from default chain (opt-in via enable_* params). Replaced full compressor with conditional limiter. LUFS target changed from -16 to -18.`
-Rationale: `Audio quality evaluation showed 30% average OVRL degradation from post-processing. Research confirmed spectral enrichment and room reverb are harmful for clean dialogue. SkyrimNet GamePlugin bypasses Skyrim's sound system, so room reverb must come from SkyrimNet's voice effects, not TTS output.`
-Affected_files: `["utilities/post_processor.py", "utilities/app_constants.py", "utilities/vocalization/recipes.json"]`
+Decision: `Replaced uniform 8-stage post-processing with 6-stage signal-adaptive pipeline. SignalProfile measures peak, RMS, true-peak dBTP, spectral centroid, sibilance ratio, crest factor, spectral tilt to drive adaptive decisions. Soft-knee limiter replaces brick-wall clipping (0-2ms attack, 50-150ms release, 6dB max reduction). De-esser intensity scales proportionally with sibilance ratio. Presence boost uses high-shelf EQ instead of peaking. Standardized manifest JSON emitted per sample. Per-speaker baseline JSONs auto-generated from eval data. Vocalization distinctness check ensures vocalizations are audibly different from speech. Removed spectral enrichment, room presence, prosodic modulation, and auto pitch shift from default chain (opt-in via enable_* params). LUFS target changed from -16 to -18.`
+Rationale: `Audio quality evaluation showed 30% average OVRL degradation from post-processing. External audio engineer review confirmed soft-knee limiting, proportional de-essing, true-peak measurement, crest factor monitoring, per-speaker baselines, manifest standardization, and vocalization distinctness checks as necessary additions. Spectral enrichment and room reverb are harmful for clean dialogue. SkyrimNet GamePlugin bypasses Skyrim's sound system, so room reverb must come from SkyrimNet's voice effects, not TTS output.`
+Affected_files: `["utilities/post_processor.py", "utilities/app_constants.py", "utilities/vocalization/recipes.json", "utilities/vocalization/distinctness_check.py", "utilities/generate_speaker_baselines.py"]`
 Tags: `["audio", "post-processing", "pipeline"]`
 
 - [ ] **Step 2: Update existing DSP pipeline decision status**
@@ -901,24 +1315,29 @@ Superseded by: the new decision ID from step 1
 ## Self-Review
 
 **1. Spec coverage check:**
-- SignalProfile + analyze_signal: Task 1 ✓
+- SignalProfile (peak, RMS, true-peak, centroid, sibilance, crest factor, tilt): Task 1 ✓
 - HPF stage: Task 4 (inside process()) ✓
-- Adaptive de-esser: Task 4 ✓
-- Adaptive EQ: Task 4 ✓
-- Adaptive limiter: Task 2 (method) + Task 4 (wiring) ✓
+- Proportional de-esser: Task 4 ✓
+- High-shelf presence boost: Task 4 ✓
+- Soft-knee limiter: Task 2 ✓
 - Loudness normalization -18 LUFS: Task 3 (constant) + Task 4 (process) ✓
 - Removed stages opt-in: Task 4 (enable_* params) ✓
+- Standardized manifest: Task 4 ✓
+- Per-speaker baselines: Task 8 ✓
+- Vocalization distinctness check: Task 7 ✓
 - NSFW vocalization tags: Task 6 ✓
 - Whisper LPF update: Task 6 ✓
 - SkyrimNet responsibility split: Addressed by removing room reverb from default ✓
-- Testing strategy: Task 8 + Task 9 ✓
-- Decision records: Task 10 ✓
+- Testing strategy: Task 10 + Task 11 ✓
+- Decision records: Task 12 ✓
 
 **2. Placeholder scan:** No TBDs, TODOs, or "implement later" patterns found.
 
 **3. Type consistency:**
-- `SignalProfile` dataclass defined in Task 1, used consistently in Task 4
+- `SignalProfile` dataclass defined in Task 1, used consistently in Tasks 2, 4, 8
 - `analyze_signal()` returns `SignalProfile` — used in both tests and process()
 - `limit_peak()` returns `tuple[np.ndarray, dict]` — matches other methods
+- `check_vocalization_distinctness()` returns `dict` — used in Task 7 tests
+- `generate_baseline()` returns `dict` — used in Task 8
 - Default parameter `de_ess_intensity=0.3` matches `DEFAULT_DE_ESS_INTENSITY`
 - Default parameter `target_loudness=-18.0` matches `DEFAULT_TARGET_LOUDNESS_LUFS`

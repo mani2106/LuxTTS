@@ -11,37 +11,31 @@
 > (documentation, ownership, history, decisions). **Always verify against
 > actual source files before making changes** — the index may be stale.
 
-Last indexed: 2026-05-03 (commit f0c6d07). Confidence: 100%.
+Last indexed: 2026-05-04 (commit c8de762). Confidence: 100%.
 ### Architecture
-Zipvoice is a Python-based audio processing and machine learning repository focused on voice synthesis and analysis. The codebase is centered around a custom zipvoice module that provides core utilities for optimization, tokenization, and ONNX modeling. The project includes a robust pipeline for audio generation, quality testing, and post-processing, supported by a suite of utility functions for configuration, caching, and feature extraction. - **Primary Language**: Python (79.3%)
-- **Configuration**: JSON, TOML
-- **Documentation**: Markdown
-- **Key Libraries & Tools**:
-    - ONNX (Modeling and Inference)
-    - PyTorch (implied by optim.py and lr_scheduler.py)
-    - Custom Tokenization and Normalization logic
-
-
-- **utilities/audio_generation_pipeline.py**: Main script for orchestrating the audio generation process.
+**zipvoice** is a Python-based audio processing and machine learning repository focused on voice synthesis and analysis. The codebase is relatively young (oldest files are ~37 days old) and highly active, with no legacy "stable core" yet established. It appears to be a specialized toolkit for handling vocalization, audio generation pipelines, and model optimization, likely targeting high-quality audio output generation given the presence of specific audio quality scorers and post-processing utilities. *   **Primary Language:** Python (74.5%)
+*   **Configuration:** JSON, TOML
+*   **Documentation:** Markdown (18.4%)
+*   **Key Libraries:** PyTorch (inferred from optim.py, lr_scheduler.py, checkpoint.py), ONNX (inferred from onnx_modeling.py), standard audio processing utilities.
 ### Key Modules
 | Module | Purpose | Owner |
 |--------|---------|-------|
 | `zipvoice` | — | — |
-| `utilities` | — | — |
+| `utilities` | The utilities module acts as the core engine for the SkyrimNet-LuxTTS applicatio | — |
 | `tests` | — | — |
 | `root` | — | — |
 ### Tech Stack
 **Languages:** Python
-**Frameworks:** PyTorch
+**Frameworks:** FastAPI, PyTorch
 
 ### Hotspots (High Churn)
 | File | Churn | 90d Commits | Owner |
 |------|-------|-------------|-------|
-| `utilities/post_processor.py` | 100.0th %ile | 14 | mani2106 |
-| `tests/audio_quality/test_full_eval.py` | 99.0th %ile | 5 | mani2106 |
-| `tests/test_post_processor.py` | 97.9th %ile | 10 | mani2106 |
-| `utilities/audio_generation_pipeline.py` | 96.9th %ile | 6 | mani2106 |
-| `tests/test_vocalization.py` | 95.8th %ile | 7 | mani2106 |
+| `utilities/post_processor.py` | 100.0th %ile | 16 | mani2106 |
+| `tests/test_post_processor.py` | 99.0th %ile | 12 | mani2106 |
+| `tests/audio_quality/test_full_eval.py` | 98.0th %ile | 6 | mani2106 |
+| `uv.lock` | 97.1th %ile | 3 | mani2106 |
+| `utilities/audio_generation_pipeline.py` | 96.1th %ile | 7 | mani2106 |
 
 ### Repowise MCP Tools
 

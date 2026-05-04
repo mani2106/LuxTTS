@@ -54,7 +54,13 @@ Key findings from professional audio engineering research:
 
 ## Design
 
+### Post-Processing Remains Optional
+
+The existing `enable_post_processing` flag on `generate_audio()` is unchanged. When `False`, raw TTS output goes directly to file with zero DSP applied. The entire signal-adaptive pipeline described below only executes when the flag is `True`. No processing is ever forced.
+
 ### Pipeline Architecture
+
+The pipeline below runs only when `enable_post_processing=True` (current default).
 
 ```
 Raw TTS Audio (48kHz, mono)
