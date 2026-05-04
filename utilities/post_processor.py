@@ -1045,133 +1045,171 @@ class AudioPostProcessor:
         text: Optional[str] = None,
         pitch_shift: Optional[float] = None,
         eq_intensity: float = 1.0,
-        de_ess_intensity: float = 0.5,
+        de_ess_intensity: float = 0.3,
         compressor_threshold_offset_db: float = -6.0,
-        compressor_ratio: float = 4.0,
-        compressor_knee_db: float = 4.0,
+        compressor_ratio: float = 2.0,
+        compressor_knee_db: float = 8.0,
         compressor_attack_ms: float = 10.0,
         compressor_release_ms: float = 100.0,
         max_gain_reduction_db: float = 12.0,
-        target_loudness: float = -16.0,
+        target_loudness: float = -18.0,
         enable_post_processing: bool = True,
+        enable_spectral_enrichment: bool = False,
+        enable_room_presence: bool = False,
+        enable_prosodic_modulation: bool = False,
+        enable_auto_pitch_shift: bool = False,
+        enable_compressor: bool = False,
     ) -> tuple[np.ndarray, dict]:
+        """Process audio through the signal-adaptive post-processing chain.
+
+        Adaptive pipeline (default):
+        0. Signal analysis -> SignalProfile
+        1. High-pass filter (always, 80Hz)
+        2. Adaptive de-esser (proportional to sibilance ratio)
+        3. Adaptive EQ (mud cut or presence boost, high-shelf for presence)
+        4. Adaptive limiter (soft-knee, if peak > threshold)
+        5. Loudness normalization (always, -18 LUFS)
+
+        Emits a standardized manifest for regression tracing.
+
+        Opt-in stages (default off):
+        - Compressor, pitch shift, prosodic modulation, room presence,
+          spectral enrichment
         """
-        Process audio through the full post-processing chain.
-
-        Processing order:
-        1. De-esser (reduce sibilance)
-        2. EQ (tame harshness, add warmth)
-        3. Compressor (soft-knee, adaptive threshold, look-ahead, makeup gain)
-        4. Pitch shift (adjust pitch)
-        5. Prosodic modulation (micro amplitude variation)
-        6. Room presence (subtle early reflections)
-        7. Spectral enrichment (harmonic exciter)
-        8. Normalize loudness (EBU R128)
-
-        Args:
-            audio: Input audio (float32, typically 48kHz)
-            sr: Sample rate
-            text: Dialogue text for automatic pitch detection (used if pitch_shift is None)
-            pitch_shift: Manual pitch override in semitones. If None, auto-detected from text.
-            eq_intensity: EQ processing intensity (0.0 = bypass, 1.0 = full)
-            de_ess_intensity: De-essing intensity (0.0 = bypass, 1.0 = full)
-            compressor_threshold_offset_db: Compressor threshold offset from signal RMS (dB)
-            compressor_ratio: Compression ratio (e.g., 4.0 = 4:1)
-            compressor_knee_db: Soft-knee width in dB
-            compressor_attack_ms: Attack time in milliseconds
-            compressor_release_ms: Release time in milliseconds
-            max_gain_reduction_db: Maximum gain reduction per frame (dB)
-            target_loudness: Target loudness in LUFS
-            enable_post_processing: If False, bypass all processing and return original audio
-
-        Returns:
-            (processed_audio, diagnostics_dict)
-            - processed_audio: The final processed audio
-            - diagnostics_dict: Nested dict with per-stage diagnostics
-                {
-                    'de_esser': {...},  # or 'tdr_nova' if using TDR Nova
-                    'equalize': {...},  # not present if using TDR Nova
-                    'compressor': {...},
-                    'pitch_shift': {...},
-                    'prosodic_modulation': {...},
-                    'room_presence': {...},
-                    'spectral_enrich': {...},
-                    'normalize_loudness': {...}
-                }
-        """
-        # Bypass if disabled
         if not enable_post_processing:
             return audio.copy(), {}
 
-        # Initialize diagnostics
         all_diagnostics = {}
+        max_gain_reduction_db_seen = 0.0
 
-        # Stage 1+2: De-esser + EQ (combined via TDR Nova if available)
-        if HAS_TDR_NOVA and self.tdr_nova_plugin is not None:
-            audio, nova_diag = self._process_tdr_nova(
-                audio, sr, de_ess_intensity, eq_intensity
+        # Stage 0: Signal analysis
+        profile = analyze_signal(audio, sr)
+        all_diagnostics['signal_profile'] = {
+            'peak': profile.peak,
+            'true_peak_db': profile.true_peak_db,
+            'rms': profile.rms,
+            'spectral_centroid': profile.spectral_centroid,
+            'sibilance_ratio': profile.sibilance_ratio,
+            'crest_factor_db': profile.crest_factor_db,
+            'spectral_tilt_db_per_octave': profile.spectral_tilt_db_per_octave,
+            'needs_limiting': profile.needs_limiting,
+            'needs_de_essing': profile.needs_de_essing,
+            'needs_mud_cut': profile.needs_mud_cut,
+            'needs_presence_boost': profile.needs_presence_boost,
+        }
+
+        # Stage 1: High-pass filter (always)
+        b, a = signal.butter(2, 80 / (sr / 2), btype='high')
+        audio = signal.filtfilt(b, a, audio).astype(np.float32)
+        all_diagnostics['high_pass_filter'] = {'cutoff_hz': 80}
+
+        # Stage 2: Adaptive de-esser (proportional to sibilance)
+        if profile.needs_de_essing and de_ess_intensity > 0:
+            from utilities.app_constants import DE_ESS_SIBILANCE_FLOOR, DE_ESS_SIBILANCE_SCALE
+            proportional = min(max(
+                (profile.sibilance_ratio - DE_ESS_SIBILANCE_FLOOR) * DE_ESS_SIBILANCE_SCALE,
+                0.0,
+            ), 1.0)
+            scaled_intensity = de_ess_intensity * proportional
+
+            audio, de_ess_diag = self.de_esser(audio, sr, intensity=scaled_intensity)
+            if de_ess_diag:
+                de_ess_diag['proportional_intensity'] = round(proportional, 3)
+                de_ess_diag['scaled_intensity'] = round(scaled_intensity, 3)
+                all_diagnostics['de_esser'] = de_ess_diag
+
+        # Stage 3: Adaptive EQ
+        if profile.needs_mud_cut:
+            b, a = self._design_peaking(300, 1.0, -2.0 * eq_intensity, sr)
+            audio = signal.filtfilt(b, a, audio).astype(np.float32)
+            all_diagnostics['adaptive_eq'] = {
+                'action': 'mud_cut', 'frequency': 300, 'gain_db': -2.0 * eq_intensity,
+            }
+        elif profile.needs_presence_boost:
+            # Use high-shelf for presence (gentler than peaking)
+            b, a = signal.butter(2, 3500 / (sr / 2), btype='high')
+            shelf_gain = 0.8 * eq_intensity  # +0.8 dB max
+            audio = audio + shelf_gain * (signal.filtfilt(b, a, audio) * 0.1).astype(np.float32)
+            all_diagnostics['adaptive_eq'] = {
+                'action': 'presence_boost', 'type': 'high_shelf',
+                'frequency': 3500, 'gain_db': 0.8 * eq_intensity,
+            }
+
+        # Stage 4: Adaptive limiter OR opt-in compressor
+        if enable_compressor:
+            audio, comp_diag = self.compress(
+                audio, sr,
+                threshold_offset_db=compressor_threshold_offset_db,
+                ratio=compressor_ratio,
+                knee_db=compressor_knee_db,
+                attack_ms=compressor_attack_ms,
+                release_ms=compressor_release_ms,
+                max_reduction_db=max_gain_reduction_db,
             )
-            if nova_diag:
-                all_diagnostics['tdr_nova'] = nova_diag
-        else:
-            # Fallback: separate de-esser + EQ stages
-            audio, de_ess_diagnostics = self.de_esser(audio, sr, intensity=de_ess_intensity)
-            if de_ess_diagnostics:
-                all_diagnostics['de_esser'] = de_ess_diagnostics
+            if comp_diag:
+                max_gain_reduction_db_seen = max(
+                    max_gain_reduction_db_seen,
+                    comp_diag.get('max_reduction_db', 0.0),
+                )
+                all_diagnostics['compressor'] = comp_diag
+        elif profile.needs_limiting:
+            audio, limiter_diag = self.limit_peak(audio, sr, threshold_db=-1.0)
+            if limiter_diag:
+                max_gain_reduction_db_seen = max(
+                    max_gain_reduction_db_seen,
+                    limiter_diag.get('max_gain_reduction_db', 0.0),
+                )
+                all_diagnostics['peak_limiter'] = limiter_diag
 
-            audio, eq_diagnostics = self.equalize(audio, sr, intensity=eq_intensity)
-            if eq_diagnostics:
-                all_diagnostics['equalize'] = eq_diagnostics
+        # Opt-in: Auto pitch shift
+        if enable_auto_pitch_shift:
+            if pitch_shift is None and text:
+                detector = PitchDetector()
+                detected_pitch = detector.detect_pitch(text)
+            else:
+                detected_pitch = pitch_shift if pitch_shift is not None else 0.0
+            audio, pitch_diag = self.pitch_shift(audio, sr, n_steps=detected_pitch)
+            if pitch_diag:
+                all_diagnostics['pitch_shift'] = pitch_diag
+            if 'pitch_shift' not in all_diagnostics:
+                all_diagnostics['pitch_shift'] = {'detected_semitones': detected_pitch}
+            else:
+                all_diagnostics['pitch_shift']['detected_semitones'] = detected_pitch
 
-        # Stage 3: Compressor (advanced with soft-knee, adaptive threshold, look-ahead, makeup gain)
-        audio, compressor_diagnostics = self.compress(
-            audio, sr,
-            threshold_offset_db=compressor_threshold_offset_db,
-            ratio=compressor_ratio,
-            knee_db=compressor_knee_db,
-            attack_ms=compressor_attack_ms,
-            release_ms=compressor_release_ms,
-            max_reduction_db=max_gain_reduction_db,
-        )
-        if compressor_diagnostics:
-            all_diagnostics['compressor'] = compressor_diagnostics
+        # Opt-in: Prosodic modulation
+        if enable_prosodic_modulation:
+            audio, prosodic_diag = self.prosodic_modulation(audio, sr, text=text or "")
+            if prosodic_diag:
+                all_diagnostics['prosodic_modulation'] = prosodic_diag
 
-        # Stage 4: Pitch shift
-        # Detect pitch from text if not provided
-        if pitch_shift is None and text:
-            detector = PitchDetector()
-            detected_pitch = detector.detect_pitch(text)
-        else:
-            detected_pitch = pitch_shift if pitch_shift is not None else 0.0
+        # Opt-in: Room presence
+        if enable_room_presence:
+            audio, room_diag = self.room_presence(audio, sr)
+            if room_diag:
+                all_diagnostics['room_presence'] = room_diag
 
-        audio, pitch_diagnostics = self.pitch_shift(audio, sr, n_steps=detected_pitch)
-        if pitch_diagnostics:
-            all_diagnostics['pitch_shift'] = pitch_diagnostics
-        # Add detected pitch value to diagnostics even if empty
-        if 'pitch_shift' not in all_diagnostics:
-            all_diagnostics['pitch_shift'] = {'detected_semitones': detected_pitch}
-        else:
-            all_diagnostics['pitch_shift']['detected_semitones'] = detected_pitch
+        # Opt-in: Spectral enrichment
+        if enable_spectral_enrichment:
+            audio, enrich_diag = self.spectral_enrich(audio, sr)
+            if enrich_diag:
+                all_diagnostics['spectral_enrich'] = enrich_diag
 
-        # Stage 5: Prosodic micro-modulation
-        audio, prosodic_diagnostics = self.prosodic_modulation(audio, sr, text=text or "")
-        if prosodic_diagnostics:
-            all_diagnostics['prosodic_modulation'] = prosodic_diagnostics
+        # Stage 5: Loudness normalization (always)
+        audio, loudness_diag = self.normalize_loudness(audio, sr, target_lufs=target_loudness)
+        if loudness_diag:
+            loudness_diag['target_lufs'] = target_loudness
+            all_diagnostics['normalize_loudness'] = loudness_diag
 
-        # Stage 6: Room presence
-        audio, room_diagnostics = self.room_presence(audio, sr)
-        if room_diagnostics:
-            all_diagnostics['room_presence'] = room_diagnostics
-
-        # Stage 7: Spectral enrichment
-        audio, enrich_diagnostics = self.spectral_enrich(audio, sr)
-        if enrich_diagnostics:
-            all_diagnostics['spectral_enrich'] = enrich_diagnostics
-
-        # Stage 8: Normalize loudness
-        audio, loudness_diagnostics = self.normalize_loudness(audio, sr, target_lufs=target_loudness)
-        if loudness_diagnostics:
-            all_diagnostics['normalize_loudness'] = loudness_diagnostics
+        # Emit standardized manifest
+        post_profile = analyze_signal(audio, sr)
+        all_diagnostics['manifest'] = {
+            'integrated_lufs': loudness_diag.get('measured_lufs', 0.0) if loudness_diag else 0.0,
+            'true_peak_db': post_profile.true_peak_db,
+            'spectral_centroid_hz': round(post_profile.spectral_centroid, 1),
+            'sibilance_ratio': round(post_profile.sibilance_ratio, 4),
+            'crest_factor_db': round(post_profile.crest_factor_db, 1),
+            'max_gain_reduction_db': round(max_gain_reduction_db_seen, 2),
+        }
 
         return audio.astype(np.float32), all_diagnostics
 
