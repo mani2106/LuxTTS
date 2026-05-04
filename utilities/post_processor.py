@@ -1,6 +1,7 @@
 """Audio post-processing pipeline for LuxTTS output quality improvement."""
 
 import logging
+from dataclasses import dataclass
 from typing import Optional
 
 import librosa
@@ -32,6 +33,83 @@ if HAS_PEDALBOARD and TDR_NOVA_ENABLED:
         logger.debug(f"TDR Nova VST3 detected at {TDR_NOVA_VST3_PATH}")
     else:
         logger.info(f"TDR Nova VST3 not found at {TDR_NOVA_VST3_PATH}, using fallback backends")
+
+
+@dataclass
+class SignalProfile:
+    """Analysis of audio signal characteristics for adaptive processing decisions."""
+    peak: float  # Max absolute sample amplitude
+    true_peak_db: float  # True-peak in dBTP via 4x oversampling
+    rms: float  # Root mean square level
+    spectral_centroid: float  # Hz - brightness measure
+    sibilance_ratio: float  # Energy in 4-8kHz / total energy
+    crest_factor_db: float  # 20*log10(peak/rms) - dynamics measure
+    spectral_tilt_db_per_octave: float  # Slope of spectrum - body/brightness proxy
+
+    @property
+    def needs_limiting(self) -> bool:
+        return bool(self.peak > 0.93)
+
+    @property
+    def needs_de_essing(self) -> bool:
+        return bool(self.sibilance_ratio > 0.15)
+
+    @property
+    def needs_mud_cut(self) -> bool:
+        return bool(self.spectral_centroid < 1500)
+
+    @property
+    def needs_presence_boost(self) -> bool:
+        return bool(self.spectral_centroid > 3500 and self.rms < 0.15)
+
+
+def _compute_true_peak_db(audio: np.ndarray) -> float:
+    """Compute true-peak via 4x oversampling."""
+    # Upsample by 4x using polynomial filtering (proper interpolation)
+    up = 4
+    oversampled = signal.resample_poly(audio.astype(np.float64), up, 1)
+    true_peak = np.max(np.abs(oversampled))
+    return float(20 * np.log10(true_peak + 1e-10))
+
+
+def analyze_signal(audio: np.ndarray, sr: int) -> SignalProfile:
+    """Analyze audio to produce a SignalProfile for adaptive processing."""
+    peak = float(np.max(np.abs(audio)))
+    true_peak_db = _compute_true_peak_db(audio)
+    rms = float(np.sqrt(np.mean(audio ** 2)))
+    crest_factor_db = float(20 * np.log10(peak / (rms + 1e-10))) if peak > 1e-10 else 0.0
+
+    # Spectral analysis via FFT
+    n = len(audio)
+    fft_magnitude = np.abs(np.fft.rfft(audio))
+    freqs = np.fft.rfftfreq(n, 1.0 / sr)
+    total_energy = np.sum(fft_magnitude) + 1e-10
+    spectral_centroid = float(np.sum(freqs * fft_magnitude) / total_energy)
+
+    # Sibilance ratio: energy in 4-8kHz band / total energy
+    sibilance_mask = (freqs >= 4000) & (freqs <= 8000)
+    sibilance_energy = float(np.sum(fft_magnitude[sibilance_mask]))
+    sibilance_ratio = sibilance_energy / total_energy
+
+    # Spectral tilt: slope of log-spectrum in dB per octave
+    valid = freqs > 0
+    log_freqs = np.log2(freqs[valid])
+    mag_db = 20 * np.log10(fft_magnitude[valid] + 1e-10)
+    if len(log_freqs) > 1:
+        coeffs = np.polyfit(log_freqs, mag_db, 1)
+        spectral_tilt = float(coeffs[0])
+    else:
+        spectral_tilt = 0.0
+
+    return SignalProfile(
+        peak=peak,
+        true_peak_db=true_peak_db,
+        rms=rms,
+        spectral_centroid=spectral_centroid,
+        sibilance_ratio=sibilance_ratio,
+        crest_factor_db=crest_factor_db,
+        spectral_tilt_db_per_octave=spectral_tilt,
+    )
 
 
 class PitchDetector:

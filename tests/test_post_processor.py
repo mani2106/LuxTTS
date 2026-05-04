@@ -2,7 +2,13 @@
 
 import pytest
 import numpy as np
-from utilities.post_processor import PitchDetector, AudioPostProcessor, HAS_TDR_NOVA
+from utilities.post_processor import (
+    PitchDetector,
+    AudioPostProcessor,
+    HAS_TDR_NOVA,
+    SignalProfile,
+    analyze_signal,
+)
 
 
 def test_pitch_detector_all_caps():
@@ -741,3 +747,112 @@ def test_spectral_enrich_silence():
     processed, _ = processor.spectral_enrich(silence, sr)
 
     np.testing.assert_allclose(processed, silence, atol=1e-7)
+
+
+# ---- SignalProfile and analyze_signal tests ----
+
+
+def test_analyze_signal_speech_like():
+    """Speech-like audio should have moderate peak, RMS, and centroid."""
+    sr = 48000
+    duration = 1.0
+    t = np.linspace(0, duration, int(sr * duration))
+    audio = (0.5 * np.sin(2 * np.pi * 200 * t) + 0.2 * np.sin(2 * np.pi * 600 * t)).astype(np.float32)
+
+    profile = analyze_signal(audio, sr)
+
+    assert 0.0 < profile.peak < 1.0
+    assert profile.true_peak_db < 0.0  # True-peak should be negative dB for sub-unity signal
+    assert 0.0 < profile.rms < 1.0
+    assert 100 < profile.spectral_centroid < 5000
+    assert 0.0 <= profile.sibilance_ratio <= 1.0
+    assert profile.crest_factor_db > 0.0  # Peak > RMS means positive crest factor
+    assert -20 < profile.spectral_tilt_db_per_octave < 20  # Reasonable range
+
+
+def test_analyze_signal_bright_audio():
+    """Audio with lots of high-frequency content should have high sibilance ratio."""
+    sr = 48000
+    duration = 1.0
+    t = np.linspace(0, duration, int(sr * duration))
+    audio = (0.1 * np.sin(2 * np.pi * 200 * t) + 0.5 * np.sin(2 * np.pi * 6000 * t)).astype(np.float32)
+
+    profile = analyze_signal(audio, sr)
+
+    assert profile.sibilance_ratio > 0.1
+    assert profile.needs_de_essing is True
+
+
+def test_analyze_signal_quiet_audio():
+    """Quiet audio should have low RMS and not need limiting."""
+    sr = 48000
+    duration = 1.0
+    t = np.linspace(0, duration, int(sr * duration))
+    audio = (0.01 * np.sin(2 * np.pi * 200 * t)).astype(np.float32)
+
+    profile = analyze_signal(audio, sr)
+
+    assert profile.needs_limiting is False
+    assert profile.rms < 0.05
+
+
+def test_analyze_signal_clipping_audio():
+    """Audio near clipping should need limiting."""
+    sr = 48000
+    duration = 1.0
+    t = np.linspace(0, duration, int(sr * duration))
+    audio = (0.98 * np.sin(2 * np.pi * 200 * t)).astype(np.float32)
+
+    profile = analyze_signal(audio, sr)
+
+    assert profile.needs_limiting is True
+
+
+def test_analyze_signal_boomy_audio():
+    """Audio with low spectral centroid should need mud cut."""
+    sr = 48000
+    duration = 1.0
+    t = np.linspace(0, duration, int(sr * duration))
+    audio = (0.5 * np.sin(2 * np.pi * 100 * t) + 0.1 * np.sin(2 * np.pi * 300 * t)).astype(np.float32)
+
+    profile = analyze_signal(audio, sr)
+
+    assert profile.needs_mud_cut is True
+
+
+def test_signal_profile_properties():
+    """SignalProfile properties should return correct booleans."""
+    profile = SignalProfile(
+        peak=0.5, true_peak_db=-6.0, rms=0.1,
+        spectral_centroid=2500.0, sibilance_ratio=0.05,
+        crest_factor_db=14.0, spectral_tilt_db_per_octave=-3.0,
+    )
+
+    assert profile.needs_limiting is False
+    assert profile.needs_de_essing is False
+    assert profile.needs_mud_cut is False
+    assert profile.needs_presence_boost is False
+
+
+def test_analyze_signal_silence():
+    """Silent audio should not crash analysis."""
+    audio = np.zeros(48000, dtype=np.float32)
+    profile = analyze_signal(audio, 48000)
+
+    assert profile.peak == 0.0
+    assert profile.rms == 0.0
+    assert profile.needs_limiting is False
+
+
+def test_analyze_signal_true_peak_oversampled():
+    """True-peak should catch inter-sample overs that sample peak misses."""
+    sr = 48000
+    duration = 1.0
+    t = np.linspace(0, duration, int(sr * duration))
+    # Construct a signal near unity where true-peak may exceed sample peak
+    audio = (0.95 * np.sin(2 * np.pi * 440 * t) + 0.05 * np.sin(2 * np.pi * 3000 * t)).astype(np.float32)
+
+    profile = analyze_signal(audio, sr)
+
+    # True-peak should be >= sample peak (never less)
+    assert profile.true_peak_db >= 20 * np.log10(profile.peak + 1e-10)
