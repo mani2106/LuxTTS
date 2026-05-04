@@ -856,3 +856,65 @@ def test_analyze_signal_true_peak_oversampled():
 
     # True-peak should be >= sample peak (never less)
     assert profile.true_peak_db >= 20 * np.log10(profile.peak + 1e-10)
+
+
+# ---- Soft-knee limiter tests ----
+
+
+def test_limit_peak_soft_knee_reduces_loud_audio():
+    """Soft-knee limiter should reduce peaks without hard clipping artifacts."""
+    sr = 48000
+    duration = 1.0
+    t = np.linspace(0, duration, int(sr * duration))
+    audio = (0.98 * np.sin(2 * np.pi * 200 * t)).astype(np.float32)
+
+    processor = AudioPostProcessor()
+    processed, diagnostics = processor.limit_peak(audio, sr, threshold_db=-1.0)
+
+    threshold_linear = 10 ** (-1.0 / 20)
+    assert np.max(np.abs(processed)) <= threshold_linear + 0.02  # Small tolerance
+    assert diagnostics['limiting_applied'] is True
+    assert 'max_gain_reduction_db' in diagnostics
+    assert diagnostics['max_gain_reduction_db'] <= 6.0  # Cap at 6dB
+
+
+def test_limit_peak_safe_audio_passes_through():
+    """Audio below threshold should pass through unchanged."""
+    sr = 48000
+    duration = 1.0
+    t = np.linspace(0, duration, int(sr * duration))
+    audio = (0.3 * np.sin(2 * np.pi * 200 * t)).astype(np.float32)
+
+    processor = AudioPostProcessor()
+    processed, diagnostics = processor.limit_peak(audio, sr, threshold_db=-1.0)
+
+    np.testing.assert_allclose(processed, audio, atol=1e-6)
+    assert diagnostics['limiting_applied'] is False
+
+
+def test_limit_peak_silence():
+    """Silent input should not crash."""
+    audio = np.zeros(48000, dtype=np.float32)
+    processor = AudioPostProcessor()
+    processed, diagnostics = processor.limit_peak(audio, 48000, threshold_db=-1.0)
+
+    assert processed is not None
+    assert len(processed) == 48000
+
+
+def test_limit_peak_no_hard_clipping():
+    """Soft-knee should not produce the flat-top distortion of hard clipping."""
+    sr = 48000
+    duration = 0.5
+    t = np.linspace(0, duration, int(sr * duration))
+    # Create a signal with sharp peaks
+    audio = (0.99 * np.sin(2 * np.pi * 200 * t)).astype(np.float32)
+
+    processor = AudioPostProcessor()
+    processed, diagnostics = processor.limit_peak(audio, sr, threshold_db=-1.0)
+
+    # Count samples exactly at threshold — should be near zero for soft-knee
+    threshold_linear = 10 ** (-1.0 / 20)
+    at_threshold = np.sum(np.abs(processed) >= threshold_linear - 0.001)
+    # Hard clip would have many samples exactly at threshold; soft-knee should have far fewer
+    assert at_threshold < len(processed) * 0.1

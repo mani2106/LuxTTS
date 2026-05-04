@@ -795,6 +795,102 @@ class AudioPostProcessor:
 
         return processed.astype(np.float32), diagnostics
 
+    def limit_peak(
+        self,
+        audio: np.ndarray,
+        sr: int,
+        threshold_db: float = -1.0,
+        attack_ms: float = 1.0,
+        release_ms: float = 80.0,
+        max_reduction_db: float = 6.0,
+    ) -> tuple[np.ndarray, dict]:
+        """
+        Soft-knee peak limiter with envelope follower.
+
+        Uses an envelope follower (attack/release smoothing) to apply
+        gain reduction smoothly, avoiding the flat-top distortion of
+        hard brick-wall clipping.
+
+        Args:
+            audio: Input audio (float32, any sample rate)
+            sr: Sample rate
+            threshold_db: Peak threshold in dBTP (default: -1.0)
+            attack_ms: Attack time in milliseconds (default: 1.0)
+            release_ms: Release time in milliseconds (default: 80.0)
+            max_reduction_db: Maximum gain reduction in dB (default: 6.0)
+
+        Returns:
+            (processed_audio, diagnostics_dict)
+        """
+        threshold_linear = 10 ** (threshold_db / 20)
+        peak = float(np.max(np.abs(audio)))
+
+        if peak <= threshold_linear:
+            return audio.copy(), {
+                'limiting_applied': False,
+                'peak_before': peak,
+                'max_gain_reduction_db': 0.0,
+            }
+
+        # Instantaneous peak detection with look-ahead for transparent limiting
+        # For a limiter, we need to respond very quickly to peaks
+        look_ahead_samples = int(5 * sr / 1000)  # 5ms look-ahead
+        if look_ahead_samples < 1:
+            look_ahead_samples = 1
+
+        # Pad audio for look-ahead
+        abs_audio = np.abs(audio.astype(np.float64))
+        padded = np.pad(abs_audio, (0, look_ahead_samples), mode='edge')
+
+        # Compute peak envelope with look-ahead
+        envelope = np.zeros_like(abs_audio)
+        for i in range(len(abs_audio)):
+            # Look ahead for the peak in the next window
+            window = padded[i:i + look_ahead_samples + 1]
+            envelope[i] = np.max(window)
+
+        # Apply release smoothing to envelope (attack is instant due to look-ahead)
+        release_coeff = np.exp(-1.0 / (sr * release_ms / 1000.0))
+        smoothed_envelope = np.zeros_like(envelope)
+        smoothed_envelope[0] = envelope[0]
+
+        for i in range(1, len(envelope)):
+            if envelope[i] > smoothed_envelope[i - 1]:
+                # Instant attack for limiting
+                smoothed_envelope[i] = envelope[i]
+            else:
+                # Smooth release
+                smoothed_envelope[i] = (release_coeff * smoothed_envelope[i - 1] +
+                                        (1 - release_coeff) * envelope[i])
+
+        # Compute gain reduction based on smoothed envelope
+        gain_reduction = np.ones_like(smoothed_envelope)
+        over_threshold = smoothed_envelope > threshold_linear
+
+        if np.any(over_threshold):
+            # Compute required gain to bring envelope to threshold
+            required_gain = threshold_linear / smoothed_envelope[over_threshold]
+
+            # Apply max reduction cap
+            min_gain = 10 ** (-max_reduction_db / 20.0)
+            required_gain = np.maximum(required_gain, min_gain)
+
+            gain_reduction[over_threshold] = required_gain
+
+        # Apply gain reduction to audio
+        processed = (audio.astype(np.float64) * gain_reduction).astype(np.float32)
+
+        # Compute max gain reduction in dB
+        min_gain_value = float(np.min(gain_reduction))
+        max_reduction = float(-20 * np.log10(min_gain_value + 1e-10))
+
+        return processed, {
+            'limiting_applied': True,
+            'peak_before': peak,
+            'peak_after': float(np.max(np.abs(processed))),
+            'max_gain_reduction_db': round(max_reduction, 2),
+        }
+
     @staticmethod
     def _compute_lufs(audio: np.ndarray, sr: int) -> float:
         """
