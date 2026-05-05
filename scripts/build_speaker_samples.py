@@ -9,6 +9,7 @@ from pathlib import Path
 import librosa
 import numpy as np
 import soundfile as sf
+from tqdm import tqdm
 
 
 
@@ -219,6 +220,77 @@ def normalize_rms(audio, target_db=-20):
     return audio * (target_rms / rms)
 
 
+def build_samples(args):
+    """Main pipeline: discover -> map -> score -> select -> concat -> write."""
+    voice_types = discover_voice_types(args.input)
+    print(f"Discovered {len(voice_types)} voice types")
+
+    mapping = resolve_speaker_voice_map(args.speakers_dir, voice_types)
+    print(f"Matched {len(mapping)} speakers to voice types")
+    for speaker, vt in sorted(mapping.items()):
+        print(f"  {speaker} -> {vt} ({len(voice_types[vt])} clips)")
+
+    os.makedirs(args.output, exist_ok=True)
+    rejected_dir = os.path.join(args.output, "rejected")
+    os.makedirs(rejected_dir, exist_ok=True)
+
+    results = []
+
+    for speaker, vt_name in tqdm(mapping.items(), desc="Building samples", unit="speaker"):
+        wav_paths = voice_types[vt_name]
+
+        # Score all clips
+        scored = []
+        for wp in tqdm(wav_paths, desc=f"  Scoring {speaker}", leave=False, unit="clip"):
+            result = score_clip(wp)
+            if result is not None:
+                scored.append((*result, wp))
+
+        if len(scored) < 3:
+            print(f"  WARNING: {speaker} has only {len(scored)} scorable clips (need >=3), skipping")
+            results.append((speaker, "skipped", f"only {len(scored)} scorable clips"))
+            continue
+
+        selected = select_clips(scored, args.target_duration, args.max_clips)
+        if not selected:
+            results.append((speaker, "skipped", "no clips selected"))
+            continue
+
+        composite, sr = crossfade_concat(selected)
+        composite = normalize_rms(composite)
+
+        out_path = os.path.join(args.output, f"{speaker}.wav")
+
+        if args.dry_run:
+            total_dur = sum(librosa.get_duration(path=p) for p in selected)
+            print(f"  [DRY RUN] {speaker}: {len(selected)} clips, {total_dur:.1f}s -> {out_path}")
+            results.append((speaker, "dry_run", f"{len(selected)} clips, {total_dur:.1f}s"))
+        else:
+            sf.write(out_path, composite, sr)
+            dur = len(composite) / sr
+            print(f"  {speaker}: {len(selected)} clips -> {dur:.1f}s -> {out_path}")
+            results.append((speaker, "built", f"{dur:.1f}s"))
+
+    print("\n=== Summary ===")
+    for speaker, status, detail in results:
+        print(f"  {status:10s} {speaker}: {detail}")
+    print(f"\nTotal: {len(results)} speakers processed")
+
+    return results
+
+
+def main():
+    args = parse_args()
+    results = build_samples(args)
+
+    if args.skip_validate:
+        print("\nValidation skipped (--skip-validate)")
+        return
+
+    # Phase 3 validation handled in next task
+    print("\nTTS validation not yet implemented. Use --skip-validate for now.")
+
+
 def test_resolve_speaker_voice_map():
     voice_types = {
         "femalecommander": ["/fake/a.wav"],
@@ -293,7 +365,4 @@ def test_crossfade_concat():
 
 
 if __name__ == "__main__":
-    test_resolve_speaker_voice_map()
-    print("Mapping test passed")
-    test_score_clip()
-    test_crossfade_concat()
+    main()
