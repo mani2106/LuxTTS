@@ -1,0 +1,752 @@
+# Voice Sample Curation Pipeline — Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** Build a reusable script that scores, concatenates, and TTS-validates extracted Skyrim voice clips into composite speaker samples.
+
+**Architecture:** Single script `scripts/build_speaker_samples.py` with three phases (score → concat → validate). Speaker name matching maps existing `speakers/en/` names to voice type folders using prefix/suffix heuristics. Progress is reported via tqdm progress bars and a summary table at the end.
+
+**Tech Stack:** Python, numpy, librosa, soundfile, tqdm, LuxTTS (for validation phase only)
+
+---
+
+### Task 1: Speaker Name Mapping
+
+**Files:**
+- Create: `scripts/__init__.py` (empty, needed for test imports)
+- Create: `scripts/build_speaker_samples.py`
+
+This task creates the script scaffold with the speaker name mapping logic.
+
+- [ ] **Step 1: Create empty `scripts/__init__.py` and script with imports + CLI**
+
+```bash
+mkdir -p scripts && touch scripts/__init__.py
+```
+
+```python
+#!/usr/bin/env python
+"""Build composite speaker samples from extracted Skyrim voice clips."""
+
+import argparse
+import os
+import sys
+from pathlib import Path
+
+import numpy as np
+import librosa
+import soundfile as sf
+from tqdm import tqdm
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="Build speaker samples from extracted voice clips")
+    parser.add_argument("--input", required=True, help="Root directory containing DLC voice folders")
+    parser.add_argument("--output", required=True, help="Output directory for composite samples")
+    parser.add_argument("--speakers-dir", default="speakers/en", help="Directory of existing speaker WAVs to match names against")
+    parser.add_argument("--target-duration", type=float, default=12.0, help="Target composite duration in seconds")
+    parser.add_argument("--max-clips", type=int, default=5, help="Maximum clips per composite")
+    parser.add_argument("--skip-validate", action="store_true", help="Skip TTS model validation")
+    parser.add_argument("--dry-run", action="store_true", help="Print selection results without writing files")
+    return parser.parse_args()
+
+
+def get_existing_speaker_names(speakers_dir):
+    """Return set of lowercase speaker names from existing WAV files."""
+    names = set()
+    if not os.path.isdir(speakers_dir):
+        return names
+    for f in os.listdir(speakers_dir):
+        if f.endswith(".wav") and "Hardlink" not in f and f != "empty_100ms.wav":
+            names.add(f.replace(".wav", "").lower())
+    return names
+
+
+def discover_voice_types(input_dir):
+    """Discover all voice type folders across DLC directories.
+
+    Returns dict: {voice_type_folder_name: [list of wav paths]}
+    """
+    voice_types = {}
+    for dlc_dir in sorted(Path(input_dir).iterdir()):
+        if not dlc_dir.is_dir():
+            continue
+        for vt_dir in sorted(dlc_dir.iterdir()):
+            if not vt_dir.is_dir():
+                continue
+            wavs = sorted(str(p) for p in vt_dir.glob("*.wav"))
+            if wavs:
+                vt_name = vt_dir.name.lower()
+                if vt_name not in voice_types:
+                    voice_types[vt_name] = []
+                voice_types[vt_name].extend(wavs)
+    return voice_types
+
+
+def resolve_speaker_voice_map(speakers_dir, voice_types):
+    """Map existing speaker names to voice type folders.
+
+    Strategy (first match wins):
+    1. Exact match (e.g. "femalecommander" → "femalecommander")
+    2. Voice type contains speaker name with "unique" prefix/suffix
+       (e.g. "astrid" → "femaleuniqueastrid")
+    3. Speaker name appears in voice type with dlc prefix
+       (e.g. "serana" → "dlc1seranavoice")
+
+    Returns dict: {speaker_name: voice_type_name}
+    """
+    existing = get_existing_speaker_names(speakers_dir)
+    if not existing:
+        return {}
+
+    # Filter out names that are clearly not voice types
+    skip_names = {"aaaharleyvoicequest", "ciri_new_combined", "vp_11_paxti", "night_mother"}
+    existing -= skip_names
+
+    vt_names = set(voice_types.keys())
+    mapping = {}
+
+    for name in sorted(existing):
+        matched_vt = None
+
+        # 1. Exact match
+        if name in vt_names:
+            matched_vt = name
+        # 2. femaleunique{name} or maleunique{name}
+        elif f"femaleunique{name}" in vt_names:
+            matched_vt = f"femaleunique{name}"
+        elif f"maleunique{name}" in vt_names:
+            matched_vt = f"maleunique{name}"
+        # 3. crunique{name} (creature uniques like alduin, paarthurnax, odahviing)
+        elif f"crunique{name}" in vt_names:
+            matched_vt = f"crunique{name}"
+        # 4. dlc prefix containing name (serana → dlc1seranavoice)
+        else:
+            for vt in vt_names:
+                if name in vt and vt.startswith("dlc"):
+                    matched_vt = vt
+                    break
+                if name in vt and vt.startswith("cr"):
+                    matched_vt = vt
+                    break
+
+        if matched_vt and matched_vt in voice_types:
+            mapping[name] = matched_vt
+
+    return mapping
+```
+
+- [ ] **Step 2: Write a quick test that the mapping resolves correctly**
+
+```python
+def test_resolve_speaker_voice_map():
+    voice_types = {
+        "femalecommander": ["/fake/a.wav"],
+        "femaleuniqueastrid": ["/fake/b.wav"],
+        "maleuniqueancano": ["/fake/c.wav"],
+        "cruniquealduin": ["/fake/d.wav"],
+        "dlc1seranavoice": ["/fake/e.wav"],
+        "dlc2maleuniqueadril": ["/fake/f.wav"],
+    }
+    speakers_dir = "/nonexistent"  # will return empty set
+    mapping = resolve_speaker_voice_map(speakers_dir, voice_types)
+    assert mapping == {}
+
+    # Mock with a temp dir containing speaker files
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        for name in ["femalecommander", "astrid", "ancano", "alduin", "serana", "adril"]:
+            Path(td, f"{name}.wav").touch()
+        mapping = resolve_speaker_voice_map(td, voice_types)
+    assert mapping["femalecommander"] == "femalecommander"
+    assert mapping["astrid"] == "femaleuniqueastrid"
+    assert mapping["ancano"] == "maleuniqueancano"
+    assert mapping["alduin"] == "cruniquealduin"
+    assert mapping["serana"] == "dlc1seranavoice"
+    assert mapping["adril"] == "dlc2maleuniqueadril"
+
+
+if __name__ == "__main__":
+    test_resolve_speaker_voice_map()
+    print("Mapping test passed")
+```
+
+- [ ] **Step 3: Run test to verify mapping logic**
+
+Run: `cd F:/Studies/LuxTTS && source .venv/Scripts/activate && python scripts/build_speaker_samples.py`
+Expected: "Mapping test passed"
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add scripts/build_speaker_samples.py
+git commit -m "feat(speaker-samples): add speaker name resolution and CLI scaffold"
+```
+
+---
+
+### Task 2: Clip Scoring
+
+**Files:**
+- Modify: `scripts/build_speaker_samples.py`
+
+Add the scoring logic that evaluates each WAV clip on energy, silence ratio, and duration.
+
+- [ ] **Step 1: Add scoring function after the mapping functions**
+
+```python
+def score_clip(wav_path, frame_length=2048, hop_length=512):
+    """Score a single WAV clip on energy, silence ratio, and duration.
+
+    Returns (score, duration, rms_db) tuple. Returns None if clip is unusable.
+    """
+    try:
+        y, sr = librosa.load(wav_path, sr=None, mono=True)
+    except Exception:
+        return None
+
+    duration = len(y) / sr
+    if duration < 0.5:
+        return None
+
+    # RMS energy in dB
+    rms = np.sqrt(np.mean(y ** 2))
+    if rms < 1e-10:
+        return None
+    rms_db = 20 * np.log10(rms)
+
+    # Energy score: peak at -15dB, degrade outside -30 to -3dB range
+    if rms_db < -30 or rms_db > -3:
+        energy_score = 0.0
+    else:
+        energy_score = max(0.0, 1.0 - abs(rms_db - (-15)) / 15.0)
+
+    # Silence ratio: proportion of frames below -40dB
+    S = np.abs(librosa.stft(y, n_fft=frame_length, hop_length=hop_length))
+    frame_rms = np.sqrt(np.mean(S ** 2, axis=0))
+    if len(frame_rms) == 0:
+        return None
+    silence_threshold = 10 ** (-40 / 20)
+    silence_ratio = np.mean(frame_rms < silence_threshold)
+    silence_score = max(0.0, 1.0 - silence_ratio)
+
+    # Duration score: peak at 3-6s, degrade outside 1-10s
+    if duration < 1 or duration > 15:
+        dur_score = 0.0
+    elif 2 <= duration <= 8:
+        dur_score = 1.0
+    else:
+        dur_score = max(0.0, 1.0 - abs(duration - 5) / 5.0)
+
+    # Weighted composite
+    score = 0.3 * energy_score + 0.4 * silence_score + 0.3 * dur_score
+    return (score, duration, rms_db)
+```
+
+- [ ] **Step 2: Add a test for scoring**
+
+Append to the `if __name__ == "__main__"` block:
+
+```python
+def test_score_clip():
+    import tempfile
+    sr = 22050
+    # Generate 3s of speech-like signal (not silence)
+    t = np.linspace(0, 3, 3 * sr, dtype=np.float32)
+    y = 0.3 * np.sin(2 * np.pi * 440 * t).astype(np.float32)
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+        sf.write(f.name, y, sr)
+        result = score_clip(f.name)
+    assert result is not None
+    score, dur, rms_db = result
+    assert 2.5 < dur < 3.5
+    assert score > 0.5
+    print(f"Score test passed: score={score:.2f}, dur={dur:.1f}s, rms={rms_db:.1f}dB")
+
+    # Test silence gives None
+    y_silent = np.zeros(3 * sr, dtype=np.float32)
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+        sf.write(f.name, y_silent, sr)
+        result = score_clip(f.name)
+    assert result is None
+    print("Silence rejection test passed")
+
+
+if __name__ == "__main__":
+    test_resolve_speaker_voice_map()
+    print("Mapping test passed")
+    test_score_clip()
+```
+
+- [ ] **Step 3: Run test**
+
+Run: `cd F:/Studies/LuxTTS && source .venv/Scripts/activate && python scripts/build_speaker_samples.py`
+Expected: Both tests pass
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add scripts/build_speaker_samples.py
+git commit -m "feat(speaker-samples): add clip scoring on energy, silence ratio, duration"
+```
+
+---
+
+### Task 3: Concatenation
+
+**Files:**
+- Modify: `scripts/build_speaker_samples.py`
+
+Add the clip selection and crossfade concatenation logic.
+
+- [ ] **Step 1: Add selection and concatenation functions**
+
+```python
+def select_clips(scored_clips, target_duration, max_clips):
+    """Select top-scoring clips to reach target duration.
+
+    Args:
+        scored_clips: list of (score, duration, rms_db, wav_path)
+        target_duration: target composite length in seconds
+        max_clips: maximum number of clips to use
+
+    Returns list of wav_path in selection order (best first).
+    """
+    scored_clips.sort(key=lambda x: x[0], reverse=True)
+    selected = []
+    total_dur = 0.0
+    for score, dur, rms_db, path in scored_clips:
+        if len(selected) >= max_clips:
+            break
+        if total_dur >= target_duration:
+            break
+        selected.append(path)
+        total_dur += dur
+    return selected
+
+
+def crossfade_concat(wav_paths, crossfade_ms=50, target_sr=44100):
+    """Load, resample, and crossfade-concatenate WAV files.
+
+    Returns numpy array and sample rate.
+    """
+    clips = []
+    for path in wav_paths:
+        y, sr = librosa.load(path, sr=target_sr, mono=True)
+        clips.append(y)
+
+    if len(clips) == 1:
+        return clips[0], target_sr
+
+    crossfade_samples = int(target_sr * crossfade_ms / 1000)
+    result = clips[0]
+    for clip in clips[1:]:
+        if crossfade_samples > len(result) or crossfade_samples > len(clip):
+            crossfade_samples = min(len(result), len(clip)) // 2
+        fade_out = np.linspace(1.0, 0.0, crossfade_samples)
+        fade_in = np.linspace(0.0, 1.0, crossfade_samples)
+        result[-crossfade_samples:] = result[-crossfade_samples:] * fade_out + clip[:crossfade_samples] * fade_in
+        result = np.concatenate([result, clip[crossfade_samples:]])
+
+    return result, target_sr
+
+
+def normalize_rms(audio, target_db=-20):
+    """Normalize audio RMS to target dB level."""
+    rms = np.sqrt(np.mean(audio ** 2))
+    if rms < 1e-10:
+        return audio
+    target_rms = 10 ** (target_db / 20)
+    return audio * (target_rms / rms)
+```
+
+- [ ] **Step 2: Add test for concatenation**
+
+```python
+def test_crossfade_concat():
+    import tempfile
+    sr = 22050
+    # Create two 1s sine waves at different frequencies
+    t1 = np.linspace(0, 1, sr, dtype=np.float32)
+    t2 = np.linspace(0, 1, sr, dtype=np.float32)
+    y1 = 0.5 * np.sin(2 * np.pi * 440 * t1).astype(np.float32)
+    y2 = 0.5 * np.sin(2 * np.pi * 880 * t2).astype(np.float32)
+
+    paths = []
+    for y in [y1, y2]:
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+            sf.write(f.name, y, sr)
+            paths.append(f.name)
+
+    result, out_sr = crossfade_concat(paths, crossfade_ms=50, target_sr=sr)
+    expected_len = 2 * sr - int(sr * 0.05)  # two clips minus crossfade overlap
+    assert abs(len(result) - expected_len) < 100, f"Expected ~{expected_len} samples, got {len(result)}"
+    assert out_sr == sr
+    print(f"Concat test passed: {len(result)} samples")
+
+    for p in paths:
+        os.unlink(p)
+```
+
+- [ ] **Step 3: Run test**
+
+Run: `cd F:/Studies/LuxTTS && source .venv/Scripts/activate && python scripts/build_speaker_samples.py`
+Expected: All tests pass
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add scripts/build_speaker_samples.py
+git commit -m "feat(speaker-samples): add clip selection and crossfade concatenation"
+```
+
+---
+
+### Task 4: Progress-Tracking Main Pipeline (Score + Concat)
+
+**Files:**
+- Modify: `scripts/build_speaker_samples.py`
+
+Wire everything together with tqdm progress bars. This task produces the working pipeline without TTS validation.
+
+- [ ] **Step 1: Add the main pipeline function**
+
+```python
+def build_samples(args):
+    """Main pipeline: discover → map → score → select → concat → write."""
+    voice_types = discover_voice_types(args.input)
+    print(f"Discovered {len(voice_types)} voice types")
+
+    mapping = resolve_speaker_voice_map(args.speakers_dir, voice_types)
+    print(f"Matched {len(mapping)} speakers to voice types")
+    for speaker, vt in sorted(mapping.items()):
+        print(f"  {speaker} → {vt} ({len(voice_types[vt])} clips)")
+
+    os.makedirs(args.output, exist_ok=True)
+    rejected_dir = os.path.join(args.output, "rejected")
+    os.makedirs(rejected_dir, exist_ok=True)
+
+    results = []
+
+    for speaker, vt_name in tqdm(mapping.items(), desc="Building samples", unit="speaker"):
+        wav_paths = voice_types[vt_name]
+
+        # Score all clips
+        scored = []
+        for wp in tqdm(wav_paths, desc=f"  Scoring {speaker}", leave=False, unit="clip"):
+            result = score_clip(wp)
+            if result is not None:
+                scored.append((*result, wp))
+
+        if len(scored) < 3:
+            print(f"  WARNING: {speaker} has only {len(scored)} scorable clips (need >=3), skipping")
+            results.append((speaker, "skipped", f"only {len(scored)} scorable clips"))
+            continue
+
+        selected = select_clips(scored, args.target_duration, args.max_clips)
+        if not selected:
+            results.append((speaker, "skipped", "no clips selected"))
+            continue
+
+        composite, sr = crossfade_concat(selected)
+        composite = normalize_rms(composite)
+
+        out_path = os.path.join(args.output, f"{speaker}.wav")
+
+        if args.dry_run:
+            total_dur = sum(librosa.get_duration(path=p) for p in selected)
+            print(f"  [DRY RUN] {speaker}: {len(selected)} clips, {total_dur:.1f}s → {out_path}")
+            results.append((speaker, "dry_run", f"{len(selected)} clips, {total_dur:.1f}s"))
+        else:
+            sf.write(out_path, composite, sr)
+            dur = len(composite) / sr
+            print(f"  {speaker}: {len(selected)} clips → {dur:.1f}s → {out_path}")
+            results.append((speaker, "built", f"{dur:.1f}s"))
+
+    print("\n=== Summary ===")
+    for speaker, status, detail in results:
+        print(f"  {status:10s} {speaker}: {detail}")
+    print(f"\nTotal: {len(results)} speakers processed")
+
+    return results
+```
+
+- [ ] **Step 2: Update the main block**
+
+```python
+def main():
+    args = parse_args()
+    results = build_samples(args)
+
+    if args.skip_validate:
+        print("\nValidation skipped (--skip-validate)")
+        return
+
+    # Phase 3 validation handled in next task
+    print("\nTTS validation not yet implemented. Use --skip-validate for now.")
+
+
+if __name__ == "__main__":
+    main()
+```
+
+- [ ] **Step 3: Test with dry-run on a small subset**
+
+Run: `cd F:/Studies/LuxTTS && source .venv/Scripts/activate && python scripts/build_speaker_samples.py --input speakers/en1/sound/voice --output speakers/en1 --speakers-dir speakers/en --dry-run`
+Expected: Prints speaker mapping and selection results without writing files
+
+- [ ] **Step 4: Run for real with --skip-validate on one speaker to verify output**
+
+Run: `cd F:/Studies/LuxTTS && source .venv/Scripts/activate && python scripts/build_speaker_samples.py --input speakers/en1/sound/voice --output speakers/en1 --speakers-dir speakers/en --skip-validate`
+Expected: WAV files written to `speakers/en1/`, summary table printed
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add scripts/build_speaker_samples.py
+git commit -m "feat(speaker-samples): wire up score+concat pipeline with progress tracking"
+```
+
+---
+
+### Task 5: TTS Validation Phase
+
+**Files:**
+- Modify: `scripts/build_speaker_samples.py`
+
+Add the TTS model validation that runs each composite through `encode_prompt()` and checks Whisper transcription quality.
+
+- [ ] **Step 1: Add validation function**
+
+```python
+def validate_samples(args, results):
+    """Run TTS model validation on built composites.
+
+    Checks Whisper transcription quality: flags if empty, too few words,
+    or implausibly low word rate.
+    """
+    built = [(speaker, detail) for speaker, status, detail in results if status == "built"]
+    if not built:
+        print("No samples to validate.")
+        return
+
+    print(f"\nLoading LuxTTS model for validation...")
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    from zipvoice.luxvoice import LuxTTS
+
+    tts = LuxTTS(device="cpu")
+    print("Model loaded.\n")
+
+    rejected_dir = os.path.join(args.output, "rejected")
+    os.makedirs(rejected_dir, exist_ok=True)
+
+    validated = []
+    for speaker, detail in tqdm(built, desc="Validating", unit="speaker"):
+        wav_path = os.path.join(args.output, f"{speaker}.wav")
+        if not os.path.exists(wav_path):
+            validated.append((speaker, "missing", detail))
+            continue
+
+        try:
+            enc = tts.encode_prompt(wav_path, duration=10)
+            prompt_tokens = enc["prompt_tokens"]
+            # The transcriber runs inside encode_prompt and prints to stdout.
+            # Re-run transcription directly to capture text for validation.
+            import librosa as _librosa
+            wav_16k, _ = _librosa.load(wav_path, sr=16000, duration=10)
+            transcription = tts.transcriber(wav_16k)["text"]
+        except Exception as e:
+            print(f"  ERROR validating {speaker}: {e}")
+            validated.append((speaker, "error", str(e)))
+            # Move to rejected
+            import shutil
+            shutil.move(wav_path, os.path.join(rejected_dir, f"{speaker}.wav"))
+            continue
+
+        words = transcription.strip().split()
+        dur = librosa.get_duration(path=wav_path)
+        word_rate = len(words) / dur if dur > 0 else 0
+
+        if len(words) < 3 and dur > 5:
+            status = "rejected"
+            reason = f"too few words ({len(words)}) for {dur:.1f}s clip"
+        elif word_rate < 0.5 and dur > 5:
+            status = "rejected"
+            reason = f"low word rate ({word_rate:.1f} w/s)"
+        else:
+            status = "valid"
+            reason = f"{len(words)} words, {word_rate:.1f} w/s"
+
+        if status == "rejected":
+            import shutil
+            shutil.move(wav_path, os.path.join(rejected_dir, f"{speaker}.wav"))
+
+        validated.append((speaker, status, reason))
+        print(f"  {status:10s} {speaker}: {reason}")
+
+    print("\n=== Validation Summary ===")
+    passed = sum(1 for _, s, _ in validated if s == "valid")
+    rejected = sum(1 for _, s, _ in validated if s == "rejected")
+    errors = sum(1 for _, s, _ in validated if s == "error")
+    print(f"  Valid: {passed}, Rejected: {rejected}, Errors: {errors}")
+
+    return validated
+```
+
+- [ ] **Step 2: Update main() to call validation**
+
+Replace the main function:
+
+```python
+def main():
+    args = parse_args()
+    results = build_samples(args)
+
+    if args.skip_validate:
+        print("\nValidation skipped (--skip-validate)")
+        return
+
+    validate_samples(args, results)
+```
+
+- [ ] **Step 3: Test validation with --skip-validate first to ensure no regression**
+
+Run: `cd F:/Studies/LuxTTS && source .venv/Scripts/activate && python scripts/build_speaker_samples.py --input speakers/en1/sound/voice --output speakers/en1 --speakers-dir speakers/en --skip-validate`
+Expected: Same behavior as before, no crashes
+
+- [ ] **Step 4: Test full pipeline with validation on a few speakers**
+
+Run: `cd F:/Studies/LuxTTS && source .venv/Scripts/activate && python scripts/build_speaker_samples.py --input speakers/en1/sound/voice --output speakers/en1 --speakers-dir speakers/en`
+Expected: Model loads, each composite is validated, summary shows valid/rejected counts
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add scripts/build_speaker_samples.py
+git commit -m "feat(speaker-samples): add TTS model validation phase with rejection handling"
+```
+
+---
+
+### Task 6: Final Cleanup and Lint
+
+**Files:**
+- Modify: `scripts/build_speaker_samples.py`
+
+Remove inline test code, ensure the script is clean and production-ready.
+
+- [ ] **Step 1: Move inline tests to proper test file**
+
+Create `tests/test_speaker_samples.py`:
+
+```python
+"""Tests for speaker sample curation pipeline."""
+import os
+import numpy as np
+import soundfile as sf
+import tempfile
+from pathlib import Path
+
+import sys
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from scripts.build_speaker_samples import (
+    resolve_speaker_voice_map,
+    score_clip,
+    crossfade_concat,
+    select_clips,
+    normalize_rms,
+)
+
+
+def test_resolve_mapping():
+    voice_types = {
+        "femalecommander": ["/fake/a.wav"],
+        "femaleuniqueastrid": ["/fake/b.wav"],
+        "maleuniqueancano": ["/fake/c.wav"],
+        "cruniquealduin": ["/fake/d.wav"],
+        "dlc1seranavoice": ["/fake/e.wav"],
+        "dlc2maleuniqueadril": ["/fake/f.wav"],
+    }
+    with tempfile.TemporaryDirectory() as td:
+        for name in ["femalecommander", "astrid", "ancano", "alduin", "serana", "adril"]:
+            Path(td, f"{name}.wav").touch()
+        mapping = resolve_speaker_voice_map(td, voice_types)
+
+    assert mapping["femalecommander"] == "femalecommander"
+    assert mapping["astrid"] == "femaleuniqueastrid"
+    assert mapping["ancano"] == "maleuniqueancano"
+    assert mapping["alduin"] == "cruniquealduin"
+    assert mapping["serana"] == "dlc1seranavoice"
+    assert mapping["adril"] == "dlc2maleuniqueadril"
+
+
+def test_score_clip_good():
+    sr = 22050
+    t = np.linspace(0, 3, 3 * sr, dtype=np.float32)
+    y = 0.3 * np.sin(2 * np.pi * 440 * t).astype(np.float32)
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+        sf.write(f.name, y, sr)
+        result = score_clip(f.name)
+    assert result is not None
+    score, dur, rms_db = result
+    assert 2.5 < dur < 3.5
+    assert score > 0.5
+
+
+def test_score_clip_silence():
+    sr = 22050
+    y = np.zeros(3 * sr, dtype=np.float32)
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+        sf.write(f.name, y, sr)
+        result = score_clip(f.name)
+    assert result is None
+
+
+def test_crossfade_concat():
+    sr = 22050
+    t = np.linspace(0, 1, sr, dtype=np.float32)
+    y1 = 0.5 * np.sin(2 * np.pi * 440 * t).astype(np.float32)
+    y2 = 0.5 * np.sin(2 * np.pi * 880 * t).astype(np.float32)
+
+    paths = []
+    for y in [y1, y2]:
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+            sf.write(f.name, y, sr)
+            paths.append(f.name)
+
+    result, out_sr = crossfade_concat(paths, crossfade_ms=50, target_sr=sr)
+    expected_len = 2 * sr - int(sr * 0.05)
+    assert abs(len(result) - expected_len) < 100
+
+    for p in paths:
+        Path(p).unlink(missing_ok=True)
+
+
+def test_normalize_rms():
+    y = np.ones(1000, dtype=np.float32) * 0.1
+    result = normalize_rms(y, target_db=-20)
+    expected_rms = 10 ** (-20 / 20)
+    actual_rms = np.sqrt(np.mean(result ** 2))
+    assert abs(actual_rms - expected_rms) < 1e-6
+```
+
+- [ ] **Step 2: Remove inline test code from the script**
+
+Delete the `test_*` functions and the inline test invocation from `scripts/build_speaker_samples.py`. Keep only `parse_args`, `get_existing_speaker_names`, `discover_voice_types`, `resolve_speaker_voice_map`, `score_clip`, `select_clips`, `crossfade_concat`, `normalize_rms`, `build_samples`, `validate_samples`, and `main`.
+
+- [ ] **Step 3: Run linter**
+
+Run: `cd F:/Studies/LuxTTS && source .venv/Scripts/activate && ruff check scripts/build_speaker_samples.py tests/test_speaker_samples.py`
+Expected: No errors (fix any that appear)
+
+- [ ] **Step 4: Run tests**
+
+Run: `cd F:/Studies/LuxTTS && source .venv/Scripts/activate && pytest tests/test_speaker_samples.py -v`
+Expected: All tests pass
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add scripts/build_speaker_samples.py tests/test_speaker_samples.py
+git commit -m "feat(speaker-samples): extract tests, lint, finalize script"
+```
