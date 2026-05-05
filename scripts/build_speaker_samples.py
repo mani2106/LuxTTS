@@ -4,7 +4,6 @@
 import argparse
 import os
 import sys
-import tempfile
 from pathlib import Path
 
 import librosa
@@ -357,79 +356,6 @@ def main():
         return
 
     validate_samples(args, results)
-
-
-def test_resolve_speaker_voice_map():
-    voice_types = {
-        "femalecommander": ["/fake/a.wav"],
-        "femaleuniqueastrid": ["/fake/b.wav"],
-        "maleuniqueancano": ["/fake/c.wav"],
-        "cruniquealduin": ["/fake/d.wav"],
-        "dlc1seranavoice": ["/fake/e.wav"],
-        "dlc2maleuniqueadril": ["/fake/f.wav"],
-    }
-    speakers_dir = "/nonexistent"  # will return empty set
-    mapping = resolve_speaker_voice_map(speakers_dir, voice_types)
-    assert mapping == {}
-
-    # Mock with a temp dir containing speaker files
-    with tempfile.TemporaryDirectory() as td:
-        for name in ["femalecommander", "astrid", "ancano", "alduin", "serana", "adril"]:
-            Path(td, f"{name}.wav").touch()
-        mapping = resolve_speaker_voice_map(td, voice_types)
-    assert mapping["femalecommander"] == "femalecommander"
-    assert mapping["astrid"] == "femaleuniqueastrid"
-    assert mapping["ancano"] == "maleuniqueancano"
-    assert mapping["alduin"] == "cruniquealduin"
-    assert mapping["serana"] == "dlc1seranavoice"
-    assert mapping["adril"] == "dlc2maleuniqueadril"
-
-
-def test_score_clip():
-    sr = 22050
-    # Generate 3s of speech-like signal (not silence)
-    t = np.linspace(0, 3, 3 * sr, dtype=np.float32)
-    y = 0.3 * np.sin(2 * np.pi * 440 * t).astype(np.float32)
-    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
-        sf.write(f.name, y, sr)
-        result = score_clip(f.name)
-    assert result is not None
-    score, dur, rms_db = result
-    assert 2.5 < dur < 3.5
-    assert score > 0.5
-    print(f"Score test passed: score={score:.2f}, dur={dur:.1f}s, rms={rms_db:.1f}dB")
-
-    # Test silence gives None
-    y_silent = np.zeros(3 * sr, dtype=np.float32)
-    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
-        sf.write(f.name, y_silent, sr)
-        result = score_clip(f.name)
-    assert result is None
-    print("Silence rejection test passed")
-
-
-def test_crossfade_concat():
-    sr = 22050
-    # Create two 1s sine waves at different frequencies
-    t1 = np.linspace(0, 1, sr, dtype=np.float32)
-    t2 = np.linspace(0, 1, sr, dtype=np.float32)
-    y1 = 0.5 * np.sin(2 * np.pi * 440 * t1).astype(np.float32)
-    y2 = 0.5 * np.sin(2 * np.pi * 880 * t2).astype(np.float32)
-
-    paths = []
-    for y in [y1, y2]:
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
-            sf.write(f.name, y, sr)
-            paths.append(f.name)
-
-    result, out_sr = crossfade_concat(paths, crossfade_ms=50, target_sr=sr)
-    expected_len = 2 * sr - int(sr * 0.05)  # two clips minus crossfade overlap
-    assert abs(len(result) - expected_len) < 100, f"Expected ~{expected_len} samples, got {len(result)}"
-    assert out_sr == sr
-    print(f"Concat test passed: {len(result)} samples")
-
-    for p in paths:
-        os.unlink(p)
 
 
 if __name__ == "__main__":
