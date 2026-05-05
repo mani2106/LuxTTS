@@ -11,19 +11,17 @@
 > (documentation, ownership, history, decisions). **Always verify against
 > actual source files before making changes** — the index may be stale.
 
-Last indexed: 2026-05-04 (commit c8de762). Confidence: 100%.
+Last indexed: 2026-05-05 (commit da32f96). Confidence: 100%.
 ### Architecture
-**zipvoice** is a Python-based audio processing and machine learning repository focused on voice synthesis and analysis. The codebase is relatively young (oldest files are ~37 days old) and highly active, with no legacy "stable core" yet established. It appears to be a specialized toolkit for handling vocalization, audio generation pipelines, and model optimization, likely targeting high-quality audio output generation given the presence of specific audio quality scorers and post-processing utilities. *   **Primary Language:** Python (74.5%)
-*   **Configuration:** JSON, TOML
-*   **Documentation:** Markdown (18.4%)
-*   **Key Libraries:** PyTorch (inferred from optim.py, lr_scheduler.py, checkpoint.py), ONNX (inferred from onnx_modeling.py), standard audio processing utilities.
+This repository contains the source code for **ZipVoice**, a Python-based project focused on audio processing, voice synthesis, and machine learning modeling. The codebase is centered around a custom voice modeling pipeline (luxvoice) and includes utilities for tokenization, feature extraction, and audio generation. It also provides a robust testing framework for evaluating audio quality. The project is not a monorepo and consists of approximately 30,000 lines of code, primarily written in Python.
 ### Key Modules
 | Module | Purpose | Owner |
 |--------|---------|-------|
 | `zipvoice` | — | — |
-| `utilities` | The utilities module acts as the core engine for the SkyrimNet-LuxTTS applicatio | — |
-| `tests` | — | — |
+| `utilities` | The utilities module serves as the comprehensive backend engine for the SkyrimNe | — |
+| `tests` | The tests module serves as the validation suite for the speaker sample curation  | — |
 | `root` | — | — |
+| `scripts` | — | — |
 ### Tech Stack
 **Languages:** Python
 **Frameworks:** FastAPI, PyTorch
@@ -31,11 +29,11 @@ Last indexed: 2026-05-04 (commit c8de762). Confidence: 100%.
 ### Hotspots (High Churn)
 | File | Churn | 90d Commits | Owner |
 |------|-------|-------------|-------|
-| `utilities/post_processor.py` | 100.0th %ile | 16 | mani2106 |
-| `tests/test_post_processor.py` | 99.0th %ile | 12 | mani2106 |
-| `tests/audio_quality/test_full_eval.py` | 98.0th %ile | 6 | mani2106 |
-| `uv.lock` | 97.1th %ile | 3 | mani2106 |
-| `utilities/audio_generation_pipeline.py` | 96.1th %ile | 7 | mani2106 |
+| `utilities/post_processor.py` | 100.0th %ile | 17 | mani2106 |
+| `tests/test_post_processor.py` | 99.1th %ile | 13 | mani2106 |
+| `tests/audio_quality/test_full_eval.py` | 98.2th %ile | 7 | mani2106 |
+| `uv.lock` | 97.3th %ile | 3 | mani2106 |
+| `docs/superpowers/plans/2026-05-04-signal-adaptive-postprocessing-plan.md` | 96.4th %ile | 2 | mani2106 |
 
 ### Repowise MCP Tools
 
