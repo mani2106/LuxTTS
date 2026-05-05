@@ -3,6 +3,7 @@
 
 import argparse
 import os
+import sys
 import tempfile
 from pathlib import Path
 
@@ -279,6 +280,74 @@ def build_samples(args):
     return results
 
 
+def validate_samples(args, results):
+    """Run TTS model validation on built composites.
+
+    Checks Whisper transcription quality: flags if empty, too few words,
+    or implausibly low word rate.
+    """
+    built = [(speaker, detail) for speaker, status, detail in results if status == "built"]
+    if not built:
+        print("No samples to validate.")
+        return
+
+    print("\nLoading LuxTTS model for validation...")
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    from zipvoice.luxvoice import LuxTTS
+
+    tts = LuxTTS(device="cpu")
+    print("Model loaded.\n")
+
+    rejected_dir = os.path.join(args.output, "rejected")
+    os.makedirs(rejected_dir, exist_ok=True)
+
+    validated = []
+    for speaker, detail in tqdm(built, desc="Validating", unit="speaker"):
+        wav_path = os.path.join(args.output, f"{speaker}.wav")
+        if not os.path.exists(wav_path):
+            validated.append((speaker, "missing", detail))
+            continue
+
+        try:
+            wav_16k, _ = librosa.load(wav_path, sr=16000, duration=10)
+            transcription = tts.transcriber(wav_16k)["text"]
+        except Exception as e:
+            print(f"  ERROR validating {speaker}: {e}")
+            validated.append((speaker, "error", str(e)))
+            import shutil
+            shutil.move(wav_path, os.path.join(rejected_dir, f"{speaker}.wav"))
+            continue
+
+        words = transcription.strip().split()
+        dur = librosa.get_duration(path=wav_path)
+        word_rate = len(words) / dur if dur > 0 else 0
+
+        if len(words) < 3 and dur > 5:
+            status = "rejected"
+            reason = f"too few words ({len(words)}) for {dur:.1f}s clip"
+        elif word_rate < 0.5 and dur > 5:
+            status = "rejected"
+            reason = f"low word rate ({word_rate:.1f} w/s)"
+        else:
+            status = "valid"
+            reason = f"{len(words)} words, {word_rate:.1f} w/s"
+
+        if status == "rejected":
+            import shutil
+            shutil.move(wav_path, os.path.join(rejected_dir, f"{speaker}.wav"))
+
+        validated.append((speaker, status, reason))
+        print(f"  {status:10s} {speaker}: {reason}")
+
+    print("\n=== Validation Summary ===")
+    passed = sum(1 for _, s, _ in validated if s == "valid")
+    rejected = sum(1 for _, s, _ in validated if s == "rejected")
+    errors = sum(1 for _, s, _ in validated if s == "error")
+    print(f"  Valid: {passed}, Rejected: {rejected}, Errors: {errors}")
+
+    return validated
+
+
 def main():
     args = parse_args()
     results = build_samples(args)
@@ -287,8 +356,7 @@ def main():
         print("\nValidation skipped (--skip-validate)")
         return
 
-    # Phase 3 validation handled in next task
-    print("\nTTS validation not yet implemented. Use --skip-validate for now.")
+    validate_samples(args, results)
 
 
 def test_resolve_speaker_voice_map():
