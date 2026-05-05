@@ -321,7 +321,10 @@ def validate_samples(args, results):
         dur = librosa.get_duration(path=wav_path)
         word_rate = len(words) / dur if dur > 0 else 0
 
-        if len(words) < 3 and dur > 5:
+        if len(words) == 0:
+            status = "rejected"
+            reason = "empty transcription"
+        elif len(words) < 3 and dur > 5:
             status = "rejected"
             reason = f"too few words ({len(words)}) for {dur:.1f}s clip"
         elif word_rate < 0.5 and dur > 5:
