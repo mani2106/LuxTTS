@@ -3,7 +3,16 @@
 
 import argparse
 import os
+import tempfile
 from pathlib import Path
+
+import librosa
+import numpy as np
+import soundfile as sf
+
+
+
+
 
 
 
@@ -104,6 +113,112 @@ def resolve_speaker_voice_map(speakers_dir, voice_types):
     return mapping
 
 
+def score_clip(wav_path, frame_length=2048, hop_length=512):
+    """Score a single WAV clip on energy, silence ratio, and duration.
+
+    Returns (score, duration, rms_db) tuple. Returns None if clip is unusable.
+    """
+    try:
+        y, sr = librosa.load(wav_path, sr=None, mono=True)
+    except Exception:
+        return None
+
+    duration = len(y) / sr
+    if duration < 0.5:
+        return None
+
+    # RMS energy in dB
+    rms = np.sqrt(np.mean(y ** 2))
+    if rms < 1e-10:
+        return None
+    rms_db = 20 * np.log10(rms)
+
+    # Energy score: peak at -15dB, degrade outside -30 to -3dB range
+    if rms_db < -30 or rms_db > -3:
+        energy_score = 0.0
+    else:
+        energy_score = max(0.0, 1.0 - abs(rms_db - (-15)) / 15.0)
+
+    # Silence ratio: proportion of frames below -40dB
+    S = np.abs(librosa.stft(y, n_fft=frame_length, hop_length=hop_length))
+    frame_rms = np.sqrt(np.mean(S ** 2, axis=0))
+    if len(frame_rms) == 0:
+        return None
+    silence_threshold = 10 ** (-40 / 20)
+    silence_ratio = np.mean(frame_rms < silence_threshold)
+    silence_score = max(0.0, 1.0 - silence_ratio)
+
+    # Duration score: peak at 3-6s, degrade outside 1-10s
+    if duration < 1 or duration > 15:
+        dur_score = 0.0
+    elif 2 <= duration <= 8:
+        dur_score = 1.0
+    else:
+        dur_score = max(0.0, 1.0 - abs(duration - 5) / 5.0)
+
+    # Weighted composite
+    score = 0.3 * energy_score + 0.4 * silence_score + 0.3 * dur_score
+    return (score, duration, rms_db)
+
+
+def select_clips(scored_clips, target_duration, max_clips):
+    """Select top-scoring clips to reach target duration.
+
+    Args:
+        scored_clips: list of (score, duration, rms_db, wav_path)
+        target_duration: target composite length in seconds
+        max_clips: maximum number of clips to use
+
+    Returns list of wav_path in selection order (best first).
+    """
+    scored_clips.sort(key=lambda x: x[0], reverse=True)
+    selected = []
+    total_dur = 0.0
+    for score, dur, rms_db, path in scored_clips:
+        if len(selected) >= max_clips:
+            break
+        if total_dur >= target_duration:
+            break
+        selected.append(path)
+        total_dur += dur
+    return selected
+
+
+def crossfade_concat(wav_paths, crossfade_ms=50, target_sr=44100):
+    """Load, resample, and crossfade-concatenate WAV files.
+
+    Returns numpy array and sample rate.
+    """
+    clips = []
+    for path in wav_paths:
+        y, sr = librosa.load(path, sr=target_sr, mono=True)
+        clips.append(y)
+
+    if len(clips) == 1:
+        return clips[0], target_sr
+
+    crossfade_samples = int(target_sr * crossfade_ms / 1000)
+    result = clips[0]
+    for clip in clips[1:]:
+        if crossfade_samples > len(result) or crossfade_samples > len(clip):
+            crossfade_samples = min(len(result), len(clip)) // 2
+        fade_out = np.linspace(1.0, 0.0, crossfade_samples)
+        fade_in = np.linspace(0.0, 1.0, crossfade_samples)
+        result[-crossfade_samples:] = result[-crossfade_samples:] * fade_out + clip[:crossfade_samples] * fade_in
+        result = np.concatenate([result, clip[crossfade_samples:]])
+
+    return result, target_sr
+
+
+def normalize_rms(audio, target_db=-20):
+    """Normalize audio RMS to target dB level."""
+    rms = np.sqrt(np.mean(audio ** 2))
+    if rms < 1e-10:
+        return audio
+    target_rms = 10 ** (target_db / 20)
+    return audio * (target_rms / rms)
+
+
 def test_resolve_speaker_voice_map():
     voice_types = {
         "femalecommander": ["/fake/a.wav"],
@@ -118,7 +233,6 @@ def test_resolve_speaker_voice_map():
     assert mapping == {}
 
     # Mock with a temp dir containing speaker files
-    import tempfile
     with tempfile.TemporaryDirectory() as td:
         for name in ["femalecommander", "astrid", "ancano", "alduin", "serana", "adril"]:
             Path(td, f"{name}.wav").touch()
@@ -131,6 +245,55 @@ def test_resolve_speaker_voice_map():
     assert mapping["adril"] == "dlc2maleuniqueadril"
 
 
+def test_score_clip():
+    sr = 22050
+    # Generate 3s of speech-like signal (not silence)
+    t = np.linspace(0, 3, 3 * sr, dtype=np.float32)
+    y = 0.3 * np.sin(2 * np.pi * 440 * t).astype(np.float32)
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+        sf.write(f.name, y, sr)
+        result = score_clip(f.name)
+    assert result is not None
+    score, dur, rms_db = result
+    assert 2.5 < dur < 3.5
+    assert score > 0.5
+    print(f"Score test passed: score={score:.2f}, dur={dur:.1f}s, rms={rms_db:.1f}dB")
+
+    # Test silence gives None
+    y_silent = np.zeros(3 * sr, dtype=np.float32)
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+        sf.write(f.name, y_silent, sr)
+        result = score_clip(f.name)
+    assert result is None
+    print("Silence rejection test passed")
+
+
+def test_crossfade_concat():
+    sr = 22050
+    # Create two 1s sine waves at different frequencies
+    t1 = np.linspace(0, 1, sr, dtype=np.float32)
+    t2 = np.linspace(0, 1, sr, dtype=np.float32)
+    y1 = 0.5 * np.sin(2 * np.pi * 440 * t1).astype(np.float32)
+    y2 = 0.5 * np.sin(2 * np.pi * 880 * t2).astype(np.float32)
+
+    paths = []
+    for y in [y1, y2]:
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+            sf.write(f.name, y, sr)
+            paths.append(f.name)
+
+    result, out_sr = crossfade_concat(paths, crossfade_ms=50, target_sr=sr)
+    expected_len = 2 * sr - int(sr * 0.05)  # two clips minus crossfade overlap
+    assert abs(len(result) - expected_len) < 100, f"Expected ~{expected_len} samples, got {len(result)}"
+    assert out_sr == sr
+    print(f"Concat test passed: {len(result)} samples")
+
+    for p in paths:
+        os.unlink(p)
+
+
 if __name__ == "__main__":
     test_resolve_speaker_voice_map()
     print("Mapping test passed")
+    test_score_clip()
+    test_crossfade_concat()
