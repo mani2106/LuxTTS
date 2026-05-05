@@ -15,7 +15,6 @@ Run with:
 
 import asyncio
 import shutil
-from pathlib import Path
 
 import librosa
 import numpy as np
@@ -40,6 +39,10 @@ VOCALIZATION_CASES = [
     ("vocalization_gasps", "[gasps] Who's there?"),
     ("vocalization_whispers", "[whispers] Don't make a sound."),
     ("vocalization_screams", "[screams] Get away from me!"),
+    ("vocalization_moans", "[moans]"),
+    ("vocalization_whimpers", "[whimpers] Please stop."),
+    ("vocalization_struggling", "[struggling]"),
+    ("vocalization_groans", "[groans]"),
 ]
 
 

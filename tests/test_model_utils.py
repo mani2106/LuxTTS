@@ -1,6 +1,5 @@
 """Tests for model_utils module."""
 
-import pytest
 from utilities.model_utils import _resolve_model_path
 from pathlib import Path
 

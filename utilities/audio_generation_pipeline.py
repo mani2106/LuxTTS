@@ -40,7 +40,7 @@ from utilities.cache_utils import get_audio_file_hash, get_cached_embedding, cac
 from utilities.audio_utils import save_wav_file, create_silence
 from utilities.app_config import AppConfig
 from utilities.post_processor import AudioPostProcessor
-from utilities.vocalization.tag_parser import parse_tags, has_vocalizations, Segment, SegmentType
+from utilities.vocalization.tag_parser import parse_tags, has_vocalizations, SegmentType
 from utilities.vocalization.vocalization_generator import VocalizationGenerator
 from utilities.vocalization.stitcher import stitch_segments
 from utilities.vocalization.recipes import get_recipe

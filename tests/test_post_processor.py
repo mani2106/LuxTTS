@@ -2,7 +2,13 @@
 
 import pytest
 import numpy as np
-from utilities.post_processor import PitchDetector, AudioPostProcessor, HAS_TDR_NOVA
+from utilities.post_processor import (
+    PitchDetector,
+    AudioPostProcessor,
+    HAS_TDR_NOVA,
+    SignalProfile,
+    analyze_signal,
+)
 
 
 def test_pitch_detector_all_caps():
@@ -425,14 +431,8 @@ def test_process_full_chain(sample_48k_audio):
         audio, sr,
         text="Hello world",
         eq_intensity=1.0,
-        de_ess_intensity=0.5,
-        compressor_threshold_offset_db=-6.0,
-        compressor_ratio=4.0,
-        compressor_knee_db=4.0,
-        compressor_attack_ms=10.0,
-        compressor_release_ms=100.0,
-        max_gain_reduction_db=12.0,
-        target_loudness=-16.0,
+        de_ess_intensity=0.3,
+        target_loudness=-18.0,
         enable_post_processing=True,
     )
 
@@ -440,21 +440,24 @@ def test_process_full_chain(sample_48k_audio):
     assert processed is not None
     assert len(processed) > 0
 
-    # Check that diagnostics from multiple stages are present
-    # Note: not all stages may have diagnostics (e.g., pitch_shift with near-zero shift)
-    assert isinstance(diagnostics, dict)
+    # Check that core adaptive stages are present
+    assert 'signal_profile' in diagnostics
+    assert 'high_pass_filter' in diagnostics
+    assert 'normalize_loudness' in diagnostics
+    assert 'manifest' in diagnostics
 
 
 def test_process_with_text_pitch_detection(sample_48k_audio):
-    """process() should detect pitch from text when pitch_shift is None."""
+    """process() should detect pitch from text when pitch_shift is None and auto pitch shift enabled."""
     audio, sr = sample_48k_audio
     processor = AudioPostProcessor(return_diagnostics=True)
 
-    # Test with excited text
+    # Test with excited text and auto pitch shift enabled
     processed, diagnostics = processor.process(
         audio, sr,
         text="This is exciting!",
         pitch_shift=None,  # Auto-detect from text
+        enable_auto_pitch_shift=True,
         enable_post_processing=True,
     )
 
@@ -476,6 +479,7 @@ def test_process_manual_pitch_override(sample_48k_audio):
         audio, sr,
         text="This is exciting!",  # Would normally be +1.0
         pitch_shift=manual_pitch,  # Override with manual value
+        enable_auto_pitch_shift=True,
         enable_post_processing=True,
     )
 
@@ -511,6 +515,7 @@ def test_process_with_all_caps_text(sample_48k_audio):
         audio, sr,
         text="THIS IS SHOUTING",
         pitch_shift=None,
+        enable_auto_pitch_shift=True,
         enable_post_processing=True,
     )
 
@@ -520,7 +525,7 @@ def test_process_with_all_caps_text(sample_48k_audio):
 
 
 def test_process_full_chain_includes_expressiveness(sample_48k_audio):
-    """Full chain should include prosodic_modulation, room_presence, spectral_enrich."""
+    """Full chain with opt-in stages should include prosodic_modulation, room_presence, spectral_enrich."""
     audio, sr = sample_48k_audio
     processor = AudioPostProcessor(return_diagnostics=True)
 
@@ -528,8 +533,11 @@ def test_process_full_chain_includes_expressiveness(sample_48k_audio):
         audio, sr,
         text="Hello world",
         eq_intensity=1.0,
-        de_ess_intensity=0.5,
-        target_loudness=-16.0,
+        de_ess_intensity=0.3,
+        target_loudness=-18.0,
+        enable_prosodic_modulation=True,
+        enable_room_presence=True,
+        enable_spectral_enrichment=True,
     )
 
     assert processed is not None
@@ -627,21 +635,20 @@ def test_process_uses_tdr_nova_when_available(sample_48k_audio):
         audio, sr,
         text="Hello world",
         eq_intensity=1.0,
-        de_ess_intensity=0.5,
-        target_loudness=-16.0,
+        de_ess_intensity=0.3,
+        target_loudness=-18.0,
     )
 
     assert processed is not None
     assert len(processed) > 0
     assert not np.any(np.isnan(processed))
 
-    if HAS_TDR_NOVA:
-        assert 'tdr_nova' in diagnostics
-        assert 'de_esser' not in diagnostics  # Should not have separate stages
+    # New pipeline does not use TDR Nova in adaptive path -- signal analysis drives stages
+    # TDR Nova is no longer invoked from process()
 
 
 def test_tdr_nova_fallback_when_missing(sample_48k_audio):
-    """If TDR Nova is disabled, should fall back to separate de-esser + EQ."""
+    """If TDR Nova is disabled, adaptive pipeline still works without it."""
     audio, sr = sample_48k_audio
     import utilities.post_processor as pp
 
@@ -653,14 +660,15 @@ def test_tdr_nova_fallback_when_missing(sample_48k_audio):
         processed, diagnostics = processor.process(
             audio, sr,
             text="Hello",
-            de_ess_intensity=0.5,
+            de_ess_intensity=0.3,
             eq_intensity=1.0,
-            target_loudness=-16.0,
+            target_loudness=-18.0,
         )
 
         assert processed is not None
         assert not np.any(np.isnan(processed))
         assert 'tdr_nova' not in diagnostics
+        assert 'signal_profile' in diagnostics
     finally:
         pp.HAS_TDR_NOVA = original_has_tdr
 
@@ -741,3 +749,311 @@ def test_spectral_enrich_silence():
     processed, _ = processor.spectral_enrich(silence, sr)
 
     np.testing.assert_allclose(processed, silence, atol=1e-7)
+
+
+# ---- SignalProfile and analyze_signal tests ----
+
+
+def test_analyze_signal_speech_like():
+    """Speech-like audio should have moderate peak, RMS, and centroid."""
+    sr = 48000
+    duration = 1.0
+    t = np.linspace(0, duration, int(sr * duration))
+    audio = (0.5 * np.sin(2 * np.pi * 200 * t) + 0.2 * np.sin(2 * np.pi * 600 * t)).astype(np.float32)
+
+    profile = analyze_signal(audio, sr)
+
+    assert 0.0 < profile.peak < 1.0
+    assert profile.true_peak_db < 0.0  # True-peak should be negative dB for sub-unity signal
+    assert 0.0 < profile.rms < 1.0
+    assert 100 < profile.spectral_centroid < 5000
+    assert 0.0 <= profile.sibilance_ratio <= 1.0
+    assert profile.crest_factor_db > 0.0  # Peak > RMS means positive crest factor
+    assert -20 < profile.spectral_tilt_db_per_octave < 20  # Reasonable range
+
+
+def test_analyze_signal_bright_audio():
+    """Audio with lots of high-frequency content should have high sibilance ratio."""
+    sr = 48000
+    duration = 1.0
+    t = np.linspace(0, duration, int(sr * duration))
+    audio = (0.1 * np.sin(2 * np.pi * 200 * t) + 0.5 * np.sin(2 * np.pi * 6000 * t)).astype(np.float32)
+
+    profile = analyze_signal(audio, sr)
+
+    assert profile.sibilance_ratio > 0.1
+    assert profile.needs_de_essing is True
+
+
+def test_analyze_signal_quiet_audio():
+    """Quiet audio should have low RMS and not need limiting."""
+    sr = 48000
+    duration = 1.0
+    t = np.linspace(0, duration, int(sr * duration))
+    audio = (0.01 * np.sin(2 * np.pi * 200 * t)).astype(np.float32)
+
+    profile = analyze_signal(audio, sr)
+
+    assert profile.needs_limiting is False
+    assert profile.rms < 0.05
+
+
+def test_analyze_signal_clipping_audio():
+    """Audio near clipping should need limiting."""
+    sr = 48000
+    duration = 1.0
+    t = np.linspace(0, duration, int(sr * duration))
+    audio = (0.98 * np.sin(2 * np.pi * 200 * t)).astype(np.float32)
+
+    profile = analyze_signal(audio, sr)
+
+    assert profile.needs_limiting is True
+
+
+def test_analyze_signal_boomy_audio():
+    """Audio with low spectral centroid should need mud cut."""
+    sr = 48000
+    duration = 1.0
+    t = np.linspace(0, duration, int(sr * duration))
+    audio = (0.5 * np.sin(2 * np.pi * 100 * t) + 0.1 * np.sin(2 * np.pi * 300 * t)).astype(np.float32)
+
+    profile = analyze_signal(audio, sr)
+
+    assert profile.needs_mud_cut is True
+
+
+def test_signal_profile_properties():
+    """SignalProfile properties should return correct booleans."""
+    profile = SignalProfile(
+        peak=0.5, true_peak_db=-6.0, rms=0.1,
+        spectral_centroid=2500.0, sibilance_ratio=0.05,
+        crest_factor_db=14.0, spectral_tilt_db_per_octave=-3.0,
+    )
+
+    assert profile.needs_limiting is False
+    assert profile.needs_de_essing is False
+    assert profile.needs_mud_cut is False
+    assert profile.needs_presence_boost is False
+
+
+def test_analyze_signal_silence():
+    """Silent audio should not crash analysis."""
+    audio = np.zeros(48000, dtype=np.float32)
+    profile = analyze_signal(audio, 48000)
+
+    assert profile.peak == 0.0
+    assert profile.rms == 0.0
+    assert profile.needs_limiting is False
+
+
+def test_analyze_signal_true_peak_oversampled():
+    """True-peak should catch inter-sample overs that sample peak misses."""
+    sr = 48000
+    duration = 1.0
+    t = np.linspace(0, duration, int(sr * duration))
+    # Construct a signal near unity where true-peak may exceed sample peak
+    audio = (0.95 * np.sin(2 * np.pi * 440 * t) + 0.05 * np.sin(2 * np.pi * 3000 * t)).astype(np.float32)
+
+    profile = analyze_signal(audio, sr)
+
+    # True-peak should be >= sample peak (never less)
+    assert profile.true_peak_db >= 20 * np.log10(profile.peak + 1e-10)
+
+
+# ---- Soft-knee limiter tests ----
+
+
+def test_limit_peak_soft_knee_reduces_loud_audio():
+    """Soft-knee limiter should reduce peaks without hard clipping artifacts."""
+    sr = 48000
+    duration = 1.0
+    t = np.linspace(0, duration, int(sr * duration))
+    audio = (0.98 * np.sin(2 * np.pi * 200 * t)).astype(np.float32)
+
+    processor = AudioPostProcessor()
+    processed, diagnostics = processor.limit_peak(audio, sr, threshold_db=-1.0)
+
+    threshold_linear = 10 ** (-1.0 / 20)
+    assert np.max(np.abs(processed)) <= threshold_linear + 0.02  # Small tolerance
+    assert diagnostics['limiting_applied'] is True
+    assert 'max_gain_reduction_db' in diagnostics
+    assert diagnostics['max_gain_reduction_db'] <= 6.0  # Cap at 6dB
+
+
+def test_limit_peak_safe_audio_passes_through():
+    """Audio below threshold should pass through unchanged."""
+    sr = 48000
+    duration = 1.0
+    t = np.linspace(0, duration, int(sr * duration))
+    audio = (0.3 * np.sin(2 * np.pi * 200 * t)).astype(np.float32)
+
+    processor = AudioPostProcessor()
+    processed, diagnostics = processor.limit_peak(audio, sr, threshold_db=-1.0)
+
+    np.testing.assert_allclose(processed, audio, atol=1e-6)
+    assert diagnostics['limiting_applied'] is False
+
+
+def test_limit_peak_silence():
+    """Silent input should not crash."""
+    audio = np.zeros(48000, dtype=np.float32)
+    processor = AudioPostProcessor()
+    processed, diagnostics = processor.limit_peak(audio, 48000, threshold_db=-1.0)
+
+    assert processed is not None
+    assert len(processed) == 48000
+
+
+def test_limit_peak_no_hard_clipping():
+    """Soft-knee should not produce the flat-top distortion of hard clipping."""
+    sr = 48000
+    duration = 0.5
+    t = np.linspace(0, duration, int(sr * duration))
+    # Create a signal with sharp peaks
+    audio = (0.99 * np.sin(2 * np.pi * 200 * t)).astype(np.float32)
+
+    processor = AudioPostProcessor()
+    processed, diagnostics = processor.limit_peak(audio, sr, threshold_db=-1.0)
+
+    # Count samples exactly at threshold — should be near zero for soft-knee
+    threshold_linear = 10 ** (-1.0 / 20)
+    at_threshold = np.sum(np.abs(processed) >= threshold_linear - 0.001)
+    # Hard clip would have many samples exactly at threshold; soft-knee should have far fewer
+    assert at_threshold < len(processed) * 0.1
+
+
+# ---- Signal-adaptive process() tests ----
+
+
+def test_process_adaptive_quiet_audio_skips_limiter():
+    """Quiet audio should not trigger the adaptive limiter."""
+    sr = 48000
+    duration = 1.0
+    t = np.linspace(0, duration, int(sr * duration))
+    audio = (0.1 * np.sin(2 * np.pi * 200 * t) + 0.05 * np.sin(2 * np.pi * 600 * t)).astype(np.float32)
+
+    processor = AudioPostProcessor(return_diagnostics=True)
+    processed, diagnostics = processor.process(audio, sr)
+
+    assert 'signal_profile' in diagnostics
+    assert diagnostics['signal_profile']['needs_limiting'] is False
+    assert 'peak_limiter' not in diagnostics or diagnostics.get('peak_limiter', {}).get('limiting_applied') is False
+
+
+def test_process_adaptive_loud_audio_gets_limiter():
+    """Loud audio (peak > 0.93) should trigger the adaptive limiter."""
+    sr = 48000
+    duration = 1.0
+    t = np.linspace(0, duration, int(sr * duration))
+    audio = (0.96 * np.sin(2 * np.pi * 200 * t)).astype(np.float32)
+
+    processor = AudioPostProcessor(return_diagnostics=True)
+    processed, diagnostics = processor.process(audio, sr)
+
+    assert diagnostics['signal_profile']['needs_limiting'] is True
+    assert 'peak_limiter' in diagnostics
+
+
+def test_process_adaptive_no_sibilance_skips_deesser():
+    """Audio without sibilance should skip de-essing."""
+    sr = 48000
+    duration = 1.0
+    t = np.linspace(0, duration, int(sr * duration))
+    audio = (0.3 * np.sin(2 * np.pi * 200 * t)).astype(np.float32)
+
+    processor = AudioPostProcessor(return_diagnostics=True)
+    processed, diagnostics = processor.process(audio, sr)
+
+    assert diagnostics['signal_profile']['needs_de_essing'] is False
+
+
+def test_process_proportional_deesser_scales_with_sibilance():
+    """De-esser intensity should be proportional to sibilance ratio."""
+    sr = 48000
+    duration = 1.0
+    t = np.linspace(0, duration, int(sr * duration))
+    # High sibilance signal
+    audio = (0.1 * np.sin(2 * np.pi * 200 * t) + 0.6 * np.sin(2 * np.pi * 6000 * t)).astype(np.float32)
+
+    processor = AudioPostProcessor(return_diagnostics=True)
+    processed, diagnostics = processor.process(audio, sr)
+
+    assert diagnostics['signal_profile']['needs_de_essing'] is True
+    assert 'de_esser' in diagnostics
+    assert 'proportional_intensity' in diagnostics['de_esser']
+
+
+def test_process_always_runs_hpf_and_loudness():
+    """HPF and loudness normalization should always run."""
+    sr = 48000
+    duration = 1.0
+    t = np.linspace(0, duration, int(sr * duration))
+    audio = (0.3 * np.sin(2 * np.pi * 200 * t)).astype(np.float32)
+
+    processor = AudioPostProcessor(return_diagnostics=True)
+    processed, diagnostics = processor.process(audio, sr)
+
+    assert 'high_pass_filter' in diagnostics
+    assert 'normalize_loudness' in diagnostics
+
+
+def test_process_disabled_returns_original():
+    """When enable_post_processing=False, return original audio."""
+    sr = 48000
+    duration = 1.0
+    t = np.linspace(0, duration, int(sr * duration))
+    audio = (0.5 * np.sin(2 * np.pi * 200 * t)).astype(np.float32)
+
+    processor = AudioPostProcessor()
+    processed, diagnostics = processor.process(audio, sr, enable_post_processing=False)
+
+    np.testing.assert_allclose(processed, audio, atol=1e-6)
+    assert diagnostics == {}
+
+
+def test_process_target_lufs_default():
+    """Default target LUFS should be -18.0."""
+    sr = 48000
+    duration = 1.0
+    t = np.linspace(0, duration, int(sr * duration))
+    audio = (0.3 * np.sin(2 * np.pi * 200 * t)).astype(np.float32)
+
+    processor = AudioPostProcessor(return_diagnostics=True)
+    _, diagnostics = processor.process(audio, sr)
+
+    assert diagnostics['normalize_loudness']['target_lufs'] == -18.0
+
+
+def test_process_removed_stages_not_in_default_diagnostics():
+    """Spectral enrichment, room presence, prosodic modulation should NOT appear in default diagnostics."""
+    sr = 48000
+    duration = 1.0
+    t = np.linspace(0, duration, int(sr * duration))
+    audio = (0.3 * np.sin(2 * np.pi * 200 * t)).astype(np.float32)
+
+    processor = AudioPostProcessor(return_diagnostics=True)
+    _, diagnostics = processor.process(audio, sr)
+
+    assert 'spectral_enrich' not in diagnostics
+    assert 'room_presence' not in diagnostics
+    assert 'prosodic_modulation' not in diagnostics
+
+
+def test_process_emits_manifest():
+    """process() should emit a standardized manifest with required fields."""
+    sr = 48000
+    duration = 1.0
+    t = np.linspace(0, duration, int(sr * duration))
+    audio = (0.3 * np.sin(2 * np.pi * 200 * t) + 0.1 * np.sin(2 * np.pi * 4000 * t)).astype(np.float32)
+
+    processor = AudioPostProcessor(return_diagnostics=True)
+    _, diagnostics = processor.process(audio, sr)
+
+    assert 'manifest' in diagnostics
+    manifest = diagnostics['manifest']
+    required_fields = [
+        'integrated_lufs', 'true_peak_db', 'spectral_centroid_hz',
+        'sibilance_ratio', 'crest_factor_db', 'max_gain_reduction_db',
+    ]
+    for field in required_fields:
+        assert field in manifest, f"Manifest missing required field: {field}"

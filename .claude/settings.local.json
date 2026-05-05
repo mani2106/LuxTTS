@@ -1,8 +1,29 @@
 {
   "permissions": {
     "allow": [
+      "Edit",
+      "Write",
+      "Read",
+      "Glob",
+      "Grep",
+      "Bash(ruff check:*)",
+      "Bash(pytest tests/:*)",
+      "Bash(uv pip:*)",
       "mcp__MCP_DOCKER__git-repo-to-markdown",
       "mcp__MCP_DOCKER__fetch"
+    ]
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "ruff check --fix $FILEPATH 2>&1 || true"
+          }
+        ]
+      }
     ]
   }
 }

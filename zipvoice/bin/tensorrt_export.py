@@ -43,7 +43,7 @@ import math
 
 import safetensors.torch
 import torch
-from torch import Tensor, nn
+from torch import Tensor
 
 from zipvoice.models.zipvoice import ZipVoice
 from zipvoice.models.zipvoice_distill import ZipVoiceDistill

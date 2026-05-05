@@ -1,11 +1,8 @@
 """Tier 3: Regression baseline comparison tests."""
 
-import json
 import tempfile
 from pathlib import Path
 
-import numpy as np
-import pytest
 
 from tests.audio_quality.suites.regression import (
     BaselineManager,

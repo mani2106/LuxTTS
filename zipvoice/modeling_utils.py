@@ -1,29 +1,19 @@
-import argparse
-import datetime as dt
 import json
-import logging
-import os
-from pathlib import Path
 from typing import Optional
 
 import numpy as np
-import safetensors.torch
 import torch
 import librosa
-import torchaudio
 from transformers import pipeline
 from huggingface_hub import snapshot_download
-from lhotse.utils import fix_random_seed
 
 from zipvoice.models.zipvoice_distill import ZipVoiceDistill
 from zipvoice.tokenizer.tokenizer import EmiliaTokenizer
 from zipvoice.utils.checkpoint import load_checkpoint
-from zipvoice.utils.common import AttributeDict, str2bool
 from zipvoice.utils.feature import VocosFbank
 from zipvoice.utils.infer import rms_norm, chunk_tokens_punctuation, cross_fade_concat
 
-from dataclasses import dataclass, field
-from typing import Optional, List
+from dataclasses import dataclass
 
 from linacodec.vocoder.vocos import Vocos
 from zipvoice.onnx_modeling import OnnxModel

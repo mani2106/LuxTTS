@@ -55,7 +55,7 @@ async def main():
                 src.rename(dest)
                 print(f"  -> Saved to {dest}")
             else:
-                print(f"  -> ERROR: Output file not found")
+                print("  -> ERROR: Output file not found")
         except Exception as e:
             print(f"  -> ERROR: {e}")
 

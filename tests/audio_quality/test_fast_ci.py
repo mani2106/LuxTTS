@@ -1,7 +1,6 @@
 """Tier 1: Fast CI tests (pure CPU, no GPU, no model loading)."""
 
 import numpy as np
-import pytest
 
 from tests.audio_quality.scorers.versa_scorer import (
     score_dnsmos,

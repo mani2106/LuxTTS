@@ -3,7 +3,6 @@
 import tempfile
 
 import numpy as np
-import pytest
 
 from utilities.audio_utils import create_silence, load_wav_file, save_wav_file
 from pathlib import Path

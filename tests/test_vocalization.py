@@ -347,7 +347,7 @@ def encode_dict():
 def test_vocalization_generator_sighs(mock_model, encode_dict):
     """Generate sighs vocalization."""
     from utilities.vocalization.vocalization_generator import VocalizationGenerator
-    from utilities.vocalization.tag_parser import Segment, SegmentType
+    from utilities.vocalization.tag_parser import SegmentType
     segment = Segment(type=SegmentType.VOCALIZATION, tag="sighs")
     generator = VocalizationGenerator(mock_model)
     audio, sr = generator.generate(segment, encode_dict)
@@ -358,7 +358,7 @@ def test_vocalization_generator_sighs(mock_model, encode_dict):
 def test_vocalization_generator_pause(mock_model, encode_dict):
     """Pause tag returns silence without TTS."""
     from utilities.vocalization.vocalization_generator import VocalizationGenerator
-    from utilities.vocalization.tag_parser import Segment, SegmentType
+    from utilities.vocalization.tag_parser import SegmentType
     segment = Segment(type=SegmentType.VOCALIZATION, tag="pause")
     generator = VocalizationGenerator(mock_model)
     audio, sr = generator.generate(segment, encode_dict)
@@ -371,7 +371,7 @@ def test_vocalization_generator_pause(mock_model, encode_dict):
 def test_vocalization_generator_unknown_tag(mock_model, encode_dict):
     """Unknown tag returns 0.3s silence with warning."""
     from utilities.vocalization.vocalization_generator import VocalizationGenerator
-    from utilities.vocalization.tag_parser import Segment, SegmentType
+    from utilities.vocalization.tag_parser import SegmentType
     segment = Segment(type=SegmentType.VOCALIZATION, tag="unknown_tag")
     generator = VocalizationGenerator(mock_model)
     audio, sr = generator.generate(segment, encode_dict)
@@ -381,7 +381,7 @@ def test_vocalization_generator_unknown_tag(mock_model, encode_dict):
 def test_vocalization_generator_with_max_duration(mock_model, encode_dict):
     """Max duration truncates long TTS output."""
     from utilities.vocalization.vocalization_generator import VocalizationGenerator
-    from utilities.vocalization.tag_parser import Segment, SegmentType
+    from utilities.vocalization.tag_parser import SegmentType
     # Return 2 seconds of audio
     long_audio = torch.randn(96000).numpy()
     mock_model.generate_speech = MagicMock(return_value=torch.from_numpy(long_audio))
@@ -395,7 +395,7 @@ def test_vocalization_generator_with_max_duration(mock_model, encode_dict):
 def test_vocalization_generator_custom_params(mock_model, encode_dict):
     """Custom TTS params are passed through."""
     from utilities.vocalization.vocalization_generator import VocalizationGenerator
-    from utilities.vocalization.tag_parser import Segment, SegmentType
+    from utilities.vocalization.tag_parser import SegmentType
     segment = Segment(type=SegmentType.VOCALIZATION, tag="sighs")
     generator = VocalizationGenerator(
         mock_model,
