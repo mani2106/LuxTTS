@@ -58,7 +58,7 @@ Composite score = weighted sum. Weights: energy 0.3, silence ratio 0.4, duration
    - Flag if empty or fewer than 3 words for clips >5s
    - Flag if word count / duration ratio is implausibly low (<0.5 words/sec)
 4. Print summary report: pass/fail per speaker
-5. Move failed composites to a `rejected/` subdirectory instead of deleting
+5. Move failed composites to `{output_dir}/rejected/` (e.g. `speakers/en1/rejected/`) instead of deleting
 
 ## CLI Interface
 

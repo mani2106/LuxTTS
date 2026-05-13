@@ -11,9 +11,9 @@
 > (documentation, ownership, history, decisions). **Always verify against
 > actual source files before making changes** — the index may be stale.
 
-Last indexed: 2026-05-05 (commit da32f96). Confidence: 100%.
+Last indexed: 2026-05-05 (commit 39de8b6). Confidence: 100%.
 ### Architecture
-This repository contains the source code for **ZipVoice**, a Python-based project focused on audio processing, voice synthesis, and machine learning modeling. The codebase is centered around a custom voice modeling pipeline (luxvoice) and includes utilities for tokenization, feature extraction, and audio generation. It also provides a robust testing framework for evaluating audio quality. The project is not a monorepo and consists of approximately 30,000 lines of code, primarily written in Python.
+ZipVoice is a Python-based audio processing and machine learning project focused on voice synthesis and analysis. The codebase (comprising ~30,800 lines of code) appears to be a specialized toolkit for training, optimizing, and evaluating voice models, likely leveraging deep learning frameworks. The project includes utilities for feature extraction, checkpointing, learning rate scheduling, and specific audio quality evaluation metrics. It also supports ONNX modeling for deployment inference.
 ### Key Modules
 | Module | Purpose | Owner |
 |--------|---------|-------|
